@@ -6,6 +6,7 @@ set(BOARD_NAME rddrone)
 set(MCU_MANUFACTURER NXP)
 set(MCU_FAMILY S32K1)
 set(MCU_LINE S32K146)
+set(MCU_FLASH_SIZE 128)
 set(JLINK_DEVICE S32K146)
 set(JLINK_DEVICE_RESET_DELAY_MILLIS 400)
 
@@ -17,7 +18,7 @@ include_directories(
     ${ONTARGET_TEST_PATH}/${BOARD_NAME}/include
 )
 
-set(MCU_LINKER_SCRIPT "${ONTARGET_TEST_PATH}/${BOARD_NAME}/Project_Settings/Linker_Files/${MCU_FAMILY}xx_flash.ld")
+set(MCU_LINKER_SCRIPT "${ONTARGET_TEST_PATH}/${BOARD_NAME}/Project_Settings/Linker_Files/${MCU_FAMILY}xx_${MCU_FLASH_SIZE}_flash.ld")
 
 set(USER_SOURCES "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/main.cpp"
                  "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/canfd.cpp"

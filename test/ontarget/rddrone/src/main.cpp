@@ -27,6 +27,11 @@
 #include "clocks_and_modes.h"
 #include "LPUART.h"
 
+#if defined ( __GNUC__ )
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#endif
+
 extern "C"
 {
     char data = 0;
@@ -118,34 +123,36 @@ int main()
     constexpr std::size_t   First_Instance     = 1u;      /* Interface instance used in this demo */
 
     /* Size of the payload in bytes of the frame to be transmitted */
-    constexpr std::uint16_t payload_length = libuavcan::media::S32K_InterfaceGroup::FrameType::MTUBytes;
+    constexpr std::uint16_t payload_length = libuavcan::media::S32K::InterfaceGroup::FrameType::MTUBytes;
+    static_assert(payload_length % 4 == 0, "we're lazy and only handle 4-byte aligned MTU transports for this demo.");
+
     /* Frame's Data Length Code in function of it's payload length in bytes */
     libuavcan::media::CAN::FrameDLC demo_DLC =
-        libuavcan::media::S32K_InterfaceGroup::FrameType::lengthToDlc(payload_length);
+        libuavcan::media::S32K::InterfaceGroup::FrameType::lengthToDlc(payload_length);
 
     /* 64-byte payload that will be exchanged between the nodes */
-    std::uint8_t demo_payload[payload_length];
+    std::uint32_t demo_payload[payload_length / 4];
 
     std::fill(demo_payload, demo_payload + payload_length, 0);
-    std::uint32_t* a = (std::uint32_t*) &demo_payload[56];
-    std::uint32_t* b = (std::uint32_t*) &demo_payload[60];
+    std::uint32_t* a = &demo_payload[56];
+    std::uint32_t* b = &demo_payload[60];
     *a               = (4 << 24) | (3 << 16) | (2 << 8) | 1;
     *b               = (8 << 24) | (7 << 16) | (6 << 8) | 5;
 
     /* Instantiate factory object */
-    libuavcan::media::S32K_InterfaceManager demo_Manager;
+    libuavcan::media::S32K::InterfaceManager demo_Manager;
 
     /* Create pointer to Interface object */
-    libuavcan::media::S32K_InterfaceGroup* demo_InterfacePtr;
+    libuavcan::media::S32K::InterfaceGroup* demo_InterfacePtr;
 
     /* Create a frame that will reach NODE_B ID */
-    libuavcan::media::S32K_InterfaceGroup::FrameType bouncing_frame_obj(demo_FrameID, demo_payload, demo_DLC);
+    libuavcan::media::S32K::InterfaceGroup::FrameType bouncing_frame_obj(demo_FrameID, reinterpret_cast<std::uint8_t*>(demo_payload), demo_DLC);
 
     /* Array of frames to transmit (current implementation supports 1) */
-    libuavcan::media::S32K_InterfaceGroup::FrameType bouncing_frame[Node_Frame_Count] = {bouncing_frame_obj};
+    libuavcan::media::S32K::InterfaceGroup::FrameType bouncing_frame[Node_Frame_Count] = {bouncing_frame_obj};
 
     /* Instantiate the filter object that the current node will apply to receiving frames */
-    libuavcan::media::S32K_InterfaceGroup::FrameType::Filter demo_Filter(Node_ID, Node_Mask);
+    libuavcan::media::S32K::InterfaceGroup::FrameType::Filter demo_Filter(Node_ID, Node_Mask);
 
     std::uint32_t rx_msg_count = 0;
 
@@ -201,7 +208,9 @@ int main()
                 status = demo_InterfacePtr->write(First_Instance, bouncing_frame, Node_Frame_Count, frames_wrote);
             }
         }
-        LPUART1_transmit_char(result);
-        LPUART1_receive_and_echo_char();  // Wait for input char, receive & echo it
     }
 }
+
+#if defined ( __GNUC__ )
+#pragma GCC diagnostic pop
+#endif
