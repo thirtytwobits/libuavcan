@@ -30,7 +30,6 @@
 /* STL queue for the intermediate ISR buffer */
 #include <deque>
 #include <type_traits>
-#include <atomic>
 
 /* libuavcan core header file for static pool allocator */
 #include "libuavcan/platform/memory.hpp"
@@ -630,7 +629,7 @@ public:
      * param instance The FlexCAN peripheral instance number in which the ISR will be executed, starts at 0.
      *                differing form this library's interface indexes that start at 1.
      */
-    void S32K_libuavcan_ISR_handler(std::uint8_t instance)
+    void isrHandler(std::uint8_t instance)
     {
         /* Perform the ISR atomically */
         DISABLE_INTERRUPTS()
@@ -681,8 +680,9 @@ public:
                 std::uint32_t id_ISR = (FlexCAN[instance]->RAMn[mb_index * MB_Size_Words + 1]) & CAN_WMBn_ID_ID_MASK;
 
                 /* Array for harvesting the received frame's payload */
-                std::uint32_t data_ISR_word[64/4];
-//                std::uint32_t data_ISR_word[(payloadLength_ISR >> 2) + std::min(1, (payloadLength_ISR & 0x3))];
+                std::uint32_t data_ISR_word[64 / 4];
+                //                std::uint32_t data_ISR_word[(payloadLength_ISR >> 2) + std::min(1, (payloadLength_ISR
+                //                & 0x3))];
 
                 /* Perform the harvesting of the payload, leveraging from native 32-bit transfers and since the FlexCAN
                  * expects the data to be in big-endian order, a byte swap is required from the little-endian
@@ -827,7 +827,7 @@ private:
 /* aligned storage allocated statically to store our single InterfaceGroup for this system. */
 std::aligned_storage<sizeof(S32KInterfaceGroupImpl), alignof(S32KInterfaceGroupImpl)>::type _group_storage;
 
-std::atomic<S32KInterfaceGroupImpl*> _group_singleton(nullptr);
+S32KInterfaceGroupImpl* _group_singleton = nullptr;
 
 }  // end anonymous namespace
 
@@ -840,39 +840,54 @@ Result InterfaceManager::startInterfaceGroup(const typename InterfaceGroupType::
                                              InterfaceGroupPtrType&                                out_group)
 {
     /* Initialize return values */
-    Result Status = Result::Success;
-    out_group     = nullptr;
+    out_group = nullptr;
 
     /* Input validation */
     if (filter_config_length > Filter_Count)
     {
-        Status = Result::BadArgument;
+        return Result::BadArgument;
+    }
+
+    // TODO : NVIC clear pending then disable CAN rx interrupts.
+
+    S32KInterfaceGroupImpl* singleton_group = _group_singleton;
+
+    if (singleton_group != nullptr)
+    {
+        // Called twice or called before stopInterfaceGroup.
+        return Result::Failure;
     }
 
     /* If function ended successfully, return address of object member of type InterfaceGroup */
-    out_group = new (&_group_storage) S32KInterfaceGroupImpl(filter_config, filter_config_length);
+    S32KInterfaceGroupImpl* initialized_group =
+        new (&_group_storage) S32KInterfaceGroupImpl(filter_config, filter_config_length);
+
+    _group_singleton = initialized_group;
+    out_group        = initialized_group;
 
     /* Return code for start of InterfaceGroup */
-    return Status;
+    return Result::Success;
 }
 
 Result InterfaceManager::stopInterfaceGroup(InterfaceGroupPtrType& inout_group)
 {
-    S32KInterfaceGroupImpl* singleton_group = _group_singleton;
-    _group_singleton = nullptr;
-        //std::atomic_exchange_explicit(&_group_singleton, nullptr, std::memory_order_acquire);
+    // TODO : NVIC clear pending then disable CAN rx interrupts.
 
+    S32KInterfaceGroupImpl* singleton_group = _group_singleton;
 
     if (singleton_group == nullptr)
     {
+        // Called twice or before startInterfaceGroup
         return Result::Failure;
     }
-    else if (inout_group != singleton_group)
+    else if (inout_group != static_cast<InterfaceGroupPtrType>(singleton_group))
     {
+        // Called with a group other than the one provided in startInterfaceGroup
         return Result::BadArgument;
     }
 
-    inout_group = nullptr;
+    _group_singleton = nullptr;
+    inout_group      = nullptr;
     singleton_group->~S32KInterfaceGroupImpl();
     return Result::Success;
 }
@@ -886,34 +901,46 @@ std::size_t InterfaceManager::getMaxFrameFilters() const
 }  // END namespace media
 }  // END namespace libuavcan
 
-// extern "C"
-// {
-//     /*
-//      * Interrupt service routines handled by hardware in each frame reception, they are installed by the linker
-//      * in function of the number of instances available in the target MCU, the names match the ones from the defined
-//      * interrupt vector table from the startup code located in the startup_S32K14x.S file.
-//      */
-//     void CAN0_ORed_0_15_MB_IRQHandler()
-//     {
-//         libuavcan::media::S32K::FlexCAN_interrupt::S32K_libuavcan_ISR_handler(0u);
-//     }
+extern "C"
+{
+    /*
+     * Interrupt service routines handled by hardware in each frame reception, they are installed by the linker
+     * in function of the number of instances available in the target MCU, the names match the ones from the defined
+     * interrupt vector table from the startup code located in the startup_S32K14x.S file.
+     */
+    void CAN0_ORed_0_15_MB_IRQHandler()
+    {
+        libuavcan::media::S32K::S32KInterfaceGroupImpl* singleton_group = libuavcan::media::S32K::_group_singleton;
+        if (singleton_group != nullptr)
+        {
+            singleton_group->isrHandler(0u);
+        }
+    }
 
-// #if defined(MCU_S32K146) || defined(MCU_S32K148)
-//     /* Interrupt for the 1st FlexCAN instance if available */
-//     void CAN1_ORed_0_15_MB_IRQHandler()
-//     {
-//         libuavcan::media::S32K::FlexCAN_interrupt::S32K_libuavcan_ISR_handler(1u);
-//     }
-// #endif
+#if defined(MCU_S32K146) || defined(MCU_S32K148)
+    /* Interrupt for the 1st FlexCAN instance if available */
+    void CAN1_ORed_0_15_MB_IRQHandler()
+    {
+        libuavcan::media::S32K::S32KInterfaceGroupImpl* singleton_group = libuavcan::media::S32K::_group_singleton;
+        if (singleton_group != nullptr)
+        {
+            singleton_group->isrHandler(1u);
+        }
+    }
+#endif
 
-// #if defined(MCU_S32K148)
-//     /* Interrupt for the 2nd FlexCAN instance if available */
-//     void CAN2_ORed_0_15_MB_IRQHandler()
-//     {
-//         libuavcan::media::S32K::FlexCAN_interrupt::S32K_libuavcan_ISR_handler(2u);
-//     }
-// #endif
-// }
+#if defined(MCU_S32K148)
+    /* Interrupt for the 2nd FlexCAN instance if available */
+    void CAN2_ORed_0_15_MB_IRQHandler()
+    {
+        libuavcan::media::S32K::S32KInterfaceGroupImpl* singleton_group = libuavcan::media::S32K::_group_singleton;
+        if (singleton_group != nullptr)
+        {
+            singleton_group->isrHandler(2u);
+        }
+    }
+#endif
+}
 
 #if defined(__GNUC__)
 #    pragma GCC diagnostic pop
