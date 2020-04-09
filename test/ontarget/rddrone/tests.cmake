@@ -18,10 +18,9 @@ include_directories(
     ${ONTARGET_TEST_PATH}/${BOARD_NAME}/include
 )
 
-set(MCU_LINKER_SCRIPT "${ONTARGET_TEST_PATH}/${BOARD_NAME}/Project_Settings/Linker_Files/${MCU_FAMILY}xx_${MCU_FLASH_SIZE}_flash.ld")
+set(MCU_LINKER_SCRIPT "${ONTARGET_TEST_PATH}/${BOARD_NAME}/Project_Settings/Linker_Files/${MCU_LINE}_${MCU_FLASH_SIZE}_flash.ld")
 
-set(USER_SOURCES "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/main.cpp"
-                 "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/canfd.cpp"
+set(USER_SOURCES "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/canfd.cpp"
                  "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/clocks_and_modes.c"
                  "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/LPUART.c"
 )
@@ -53,8 +52,6 @@ function(define_ontarget_unit_test ARG_TEST_NAME ARG_TEST_SOURCE)
                     PROPERTIES
                     LINK_DEPENDS ${MCU_LINKER_SCRIPT})
 
-    target_link_libraries(${LOCAL_TEST_ELF} gmock_main)
-
     add_custom_command(TARGET ${LOCAL_TEST_ELF} POST_BUILD
                     COMMAND ${CMAKE_OBJCOPY} -Oihex $<TARGET_FILE:${LOCAL_TEST_ELF}> ${CMAKE_CURRENT_BINARY_DIR}/${LOCAL_TEST_HEX}
                     COMMENT "${LOCAL_TEST_ELF} -> ${LOCAL_TEST_HEX}")
@@ -84,7 +81,7 @@ endfunction()
 file(GLOB NATIVE_TESTS
      LIST_DIRECTORIES false
      RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
-     ${CMAKE_CURRENT_SOURCE_DIR}/native/test_*.cpp
+     ${CMAKE_CURRENT_SOURCE_DIR}/ontarget/rddrone/src/test_*.cpp
 )
 
 foreach(NATIVE_TEST ${NATIVE_TESTS})
