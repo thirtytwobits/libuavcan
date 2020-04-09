@@ -20,7 +20,7 @@ include_directories(
 set(MCU_LINKER_SCRIPT "${ONTARGET_TEST_PATH}/${BOARD_NAME}/Project_Settings/Linker_Files/${MCU_FAMILY}xx_flash.ld")
 
 set(USER_SOURCES "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/main.cpp"
-                 "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/test_sys.c"
+                 "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/canfd.cpp"
                  "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/clocks_and_modes.c"
                  "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/LPUART.c"
 )
