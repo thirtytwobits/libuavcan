@@ -54,6 +54,12 @@ public:
     InterfaceGroup& operator=(const InterfaceGroup&) = delete;
     InterfaceGroup(const InterfaceGroup&&) = delete;
     InterfaceGroup& operator=(const InterfaceGroup&&) = delete;
+
+    /**
+     * Get the number of time this interface group discarded received messages because internal receive
+     * buffers were full.
+     */
+    std::uint32_t get_rx_overflows() const;
 };
 
 /**
