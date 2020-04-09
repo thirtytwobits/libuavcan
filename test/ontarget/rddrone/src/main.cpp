@@ -27,9 +27,9 @@
 #include "clocks_and_modes.h"
 #include "LPUART.h"
 
-#if defined ( __GNUC__ )
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wold-style-cast"
+#if defined(__GNUC__)
+#    pragma GCC diagnostic push
+#    pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
 
 extern "C"
@@ -143,10 +143,12 @@ int main()
     libuavcan::media::S32K::InterfaceManager demo_Manager;
 
     /* Create pointer to Interface object */
-    libuavcan::media::S32K::InterfaceGroup* demo_InterfacePtr;
+    libuavcan::media::S32K::InterfaceManager::InterfaceGroupPtrType demo_InterfacePtr;
 
     /* Create a frame that will reach NODE_B ID */
-    libuavcan::media::S32K::InterfaceGroup::FrameType bouncing_frame_obj(demo_FrameID, reinterpret_cast<std::uint8_t*>(demo_payload), demo_DLC);
+    libuavcan::media::S32K::InterfaceGroup::FrameType bouncing_frame_obj(demo_FrameID,
+                                                                         reinterpret_cast<std::uint8_t*>(demo_payload),
+                                                                         demo_DLC);
 
     /* Array of frames to transmit (current implementation supports 1) */
     libuavcan::media::S32K::InterfaceGroup::FrameType bouncing_frame[Node_Frame_Count] = {bouncing_frame_obj};
@@ -211,6 +213,6 @@ int main()
     }
 }
 
-#if defined ( __GNUC__ )
-#pragma GCC diagnostic pop
+#if defined(__GNUC__)
+#    pragma GCC diagnostic pop
 #endif

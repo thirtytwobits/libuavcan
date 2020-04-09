@@ -18,9 +18,9 @@
 #    define UAVCAN_NODE_BOARD_USED 1
 #endif
 
-#if defined ( __GNUC__ )
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wold-style-cast"
+#if defined(__GNUC__)
+#    pragma GCC diagnostic push
+#    pragma GCC diagnostic ignored "-Wold-style-cast"
 #endif
 
 /* S32K driver header file */
@@ -873,6 +873,6 @@ extern "C"
 #endif
 }
 
-#if defined ( __GNUC__ )
-#pragma GCC diagnostic pop
+#if defined(__GNUC__)
+#    pragma GCC diagnostic pop
 #endif
