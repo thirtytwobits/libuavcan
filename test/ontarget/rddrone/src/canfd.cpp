@@ -208,33 +208,32 @@ public:
                 const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
                 std::size_t                                                             filter_config_length)
         : index_(peripheral_index)
+        , fc_(FlexCAN[index_])
         , data_ISR_word_{0}
         , discarded_frames_count_(0)
         , frame_ISRbuffer_()
     {
-        CAN_Type* fc = FlexCAN[index_];
-
         /* FlexCAN instance initialization */
         PCC->PCCn[PCC_FlexCAN_Index[index_]] = PCC_PCCn_CGC_MASK; /* FlexCAN clock gating */
-        fc->MCR |= CAN_MCR_MDIS_MASK;                      /* Disable FlexCAN module for clock source selection */
-        fc->CTRL1 &= ~CAN_CTRL1_CLKSRC_MASK;               /* Clear any previous clock source configuration */
-        fc->CTRL1 |= CAN_CTRL1_CLKSRC_MASK;                /* Select SYS_CLK as source (80Mhz)*/
-        fc->MCR &= ~CAN_MCR_MDIS_MASK;                     /* Enable FlexCAN peripheral */
-        fc->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK); /* Request freeze mode etry */
+        fc_->MCR |= CAN_MCR_MDIS_MASK;                      /* Disable FlexCAN module for clock source selection */
+        fc_->CTRL1 &= ~CAN_CTRL1_CLKSRC_MASK;               /* Clear any previous clock source configuration */
+        fc_->CTRL1 |= CAN_CTRL1_CLKSRC_MASK;                /* Select SYS_CLK as source (80Mhz)*/
+        fc_->MCR &= ~CAN_MCR_MDIS_MASK;                     /* Enable FlexCAN peripheral */
+        fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK); /* Request freeze mode etry */
 
         /* Block for freeze mode entry */
-        while (!(fc->MCR & CAN_MCR_FRZACK_MASK))
+        while (!(fc_->MCR & CAN_MCR_FRZACK_MASK))
         {
         };
 
         /* Next configurations are only permitted in freeze mode */
-        fc->MCR |= CAN_MCR_FDEN_MASK |          /* Habilitate CANFD feature */
+        fc_->MCR |= CAN_MCR_FDEN_MASK |          /* Habilitate CANFD feature */
                    CAN_MCR_FRZ_MASK;            /* Enable freeze mode entry when HALT bit is asserted */
-        fc->CTRL2 |= CAN_CTRL2_ISOCANFDEN_MASK; /* Activate the use of ISO 11898-1 CAN-FD standard */
+        fc_->CTRL2 |= CAN_CTRL2_ISOCANFDEN_MASK; /* Activate the use of ISO 11898-1 CAN-FD standard */
 
         /* CAN Bit Timing (CBT) configuration for a nominal phase of 1 Mbit/s with 80 time quantas,
             in accordance with Bosch 2012 specification, sample point at 83.75% */
-        fc->CBT |= CAN_CBT_BTF_MASK |     /* Enable extended bit timing configurations for CAN-FD
+        fc_->CBT |= CAN_CBT_BTF_MASK |     /* Enable extended bit timing configurations for CAN-FD
                                                                                                                     for
                                                         setting     up separetely nominal and data phase */
                    CAN_CBT_EPRESDIV(0) |  /* Prescaler divisor factor of 1 */
@@ -245,7 +244,7 @@ public:
 
         /* CAN-FD Bit Timing (FDCBT) for a data phase of 4 Mbit/s with 20 time quantas,
             in accordance with Bosch 2012 specification, sample point at 75% */
-        fc->FDCBT |= CAN_FDCBT_FPRESDIV(0) | /* Prescaler divisor factor of 1 */
+        fc_->FDCBT |= CAN_FDCBT_FPRESDIV(0) | /* Prescaler divisor factor of 1 */
                      CAN_FDCBT_FPROPSEG(7) | /* Propagation semgment of 7 time quantas
                                                                              (only register that doesn't add 1) */
                      CAN_FDCBT_FPSEG1(6) |   /* Phase buffer segment 1 of 7 time quantas */
@@ -253,7 +252,7 @@ public:
                      CAN_FDCBT_FRJW(4);      /* Resynchorinzation jump width same as PSEG2 */
 
         /* Additional CAN-FD configurations */
-        fc->FDCTRL |= CAN_FDCTRL_FDRATE_MASK | /* Enable bit rate switch in data phase of frame */
+        fc_->FDCTRL |= CAN_FDCTRL_FDRATE_MASK | /* Enable bit rate switch in data phase of frame */
                       CAN_FDCTRL_TDCEN_MASK |  /* Enable transceiver delay compensation */
                       CAN_FDCTRL_TDCOFF(5) |   /* Setup 5 cycles for data phase sampling delay */
                       CAN_FDCTRL_MBDSR0(3);    /* Setup 64 bytes per message buffer (7 MB's) */
@@ -264,25 +263,25 @@ public:
          */
         for (std::uint8_t j = 0; j < CAN_RAMn_COUNT; j++)
         {
-            fc->RAMn[j] = 0;
+            fc_->RAMn[j] = 0;
         }
 
         /* Clear the reception masks before configuring the ones needed */
         for (std::uint8_t j = 0; j < CAN_RXIMR_COUNT; j++)
         {
-            fc->RXIMR[j] = 0;
+            fc_->RXIMR[j] = 0;
         }
 
         /* Setup maximum number of message buffers as 7, 0th and 1st for transmission and 2nd-6th for RX */
-        fc->MCR &= ~CAN_MCR_MAXMB_MASK;                     /* Clear previous configuracion of MAXMB, default is 0xF */
-        fc->MCR |= CAN_MCR_MAXMB(6) | CAN_MCR_SRXDIS_MASK | /* Disable self-reception of frames if ID matches */
+        fc_->MCR &= ~CAN_MCR_MAXMB_MASK;                     /* Clear previous configuracion of MAXMB, default is 0xF */
+        fc_->MCR |= CAN_MCR_MAXMB(6) | CAN_MCR_SRXDIS_MASK | /* Disable self-reception of frames if ID matches */
                    CAN_MCR_IRMQ_MASK;                       /* Enable individual message buffer masking */
 
         /* Setup Message buffers 2nd-6th for reception and set filters */
         for (std::uint8_t j = 0; j < filter_config_length; j++)
         {
             /* Setup reception MB's mask from input argument */
-            fc->RXIMR[j + 2] = filter_config[j].mask;
+            fc_->RXIMR[j + 2] = filter_config[j].mask;
 
             /* Setup word 0 (4 Bytes) for ith MB
              * Extended Data Length      (EDL) = 1
@@ -295,20 +294,20 @@ public:
              * Data Length Code          (DLC) = 0 ( Valid for transmission only )
              * Counter Time Stamp (TIME STAMP) = 0 ( Handled by hardware )
              */
-            fc->RAMn[(j + 2) * MB_Size_Words] = CAN_RAMn_DATA_BYTE_0(0xC4) | CAN_RAMn_DATA_BYTE_1(0x20);
+            fc_->RAMn[(j + 2) * MB_Size_Words] = CAN_RAMn_DATA_BYTE_0(0xC4) | CAN_RAMn_DATA_BYTE_1(0x20);
 
             /* Setup Message buffers 2-7 29-bit extended ID from parameter */
-            fc->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
+            fc_->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
         }
     }
 
     ~S32KFlexCan()
     {
         /* Disable FlexCAN module */
-        FlexCAN[index_]->MCR |= CAN_MCR_MDIS_MASK;
+        fc_->MCR |= CAN_MCR_MDIS_MASK;
 
         /* Poll for Low Power ACK, waits for current transmission/reception to finish */
-        while (FlexCAN[index_]->MCR, CAN_MCR_LPMACK_MASK)
+        while (fc_->MCR, CAN_MCR_LPMACK_MASK)
             ;
 
         /* Disable FlexCAN clock gating */
@@ -326,7 +325,7 @@ public:
         std::uint8_t mb_index = 0;
 
         /* Check which RX MB caused the interrupt (0b1111100) mask for 2nd-6th MB */
-        switch (FlexCAN[index_]->IFLAG1 & 124)
+        switch (fc_->IFLAG1 & 124)
         {
         case MessageBuffer2:
             mb_index = 2u; /* Case for 2nd MB */
@@ -351,11 +350,15 @@ public:
             /* Receive a frame only if the buffer its under its capacity */
             if (frame_ISRbuffer_.size() <= Frame_Capacity)
             {
+                // TODO: use fixed FIFO buffers that are lockless instead of deque
+                // TODO: don't byte-swap in the ISR. Defer this until read.
+                // TODO: See if we can set the timestamp to be ch1 of lpit 1.
+
                 /* Harvest the Message buffer, read of the control and status word locks the MB */
 
                 /* Get the raw DLC from the message buffer that received a frame */
                 std::uint32_t dlc_ISR_raw =
-                    ((FlexCAN[index_]->RAMn[mb_index * MB_Size_Words]) & CAN_WMBn_CS_DLC_MASK) >> CAN_WMBn_CS_DLC_SHIFT;
+                    ((fc_->RAMn[mb_index * MB_Size_Words]) & CAN_WMBn_CS_DLC_MASK) >> CAN_WMBn_CS_DLC_SHIFT;
 
                 /* Create CAN::FrameDLC type variable from the raw dlc */
                 CAN::FrameDLC dlc_ISR = CAN::FrameDLC(dlc_ISR_raw);
@@ -364,7 +367,7 @@ public:
                 std::uint8_t payloadLength_ISR = InterfaceGroup::FrameType::dlcToLength(dlc_ISR);
 
                 /* Get the id */
-                std::uint32_t id_ISR = (FlexCAN[index_]->RAMn[mb_index * MB_Size_Words + 1]) & CAN_WMBn_ID_ID_MASK;
+                std::uint32_t id_ISR = (fc_->RAMn[mb_index * MB_Size_Words + 1]) & CAN_WMBn_ID_ID_MASK;
 
                 /* Perform the harvesting of the payload, leveraging from native 32-bit transfers and since the FlexCAN
                  * expects the data to be in big-endian order, a byte swap is required from the little-endian
@@ -373,12 +376,12 @@ public:
                      i < (payloadLength_ISR >> 2) + std::min(1, static_cast<std::uint8_t>(payloadLength_ISR) & 0x3);
                      i++)
                 {
-                    REV_BYTES_32(FlexCAN[index_]->RAMn[mb_index * MB_Size_Words + MB_Data_Offset + i],
+                    REV_BYTES_32(fc_->RAMn[mb_index * MB_Size_Words + MB_Data_Offset + i],
                                  data_ISR_word_[i]);
                 }
 
                 /* Harvest the frame's 16-bit hardware timestamp */
-                std::uint64_t MB_timestamp = FlexCAN[index_]->RAMn[mb_index * MB_Size_Words] & 0xFFFF;
+                std::uint64_t MB_timestamp = fc_->RAMn[mb_index * MB_Size_Words] & 0xFFFF;
 
                 /* Instantiate monotonic object form a resolved timestamp */
                 time::Monotonic timestamp_ISR = resolve_Timestamp(MB_timestamp);
@@ -400,7 +403,7 @@ public:
             }
 
             /* Clear MB interrupt flag (write 1 to clear)*/
-            FlexCAN[index_]->IFLAG1 |= (1u << mb_index);
+            fc_->IFLAG1 |= (1u << mb_index);
         }
     }
 
@@ -416,7 +419,7 @@ public:
         else if (!ignore_write_available)
         {
             /* Poll the Inactive Message Buffer and Valid Priority Status flags for TX availability */
-            if ((FlexCAN[index_]->ESR2 & CAN_ESR2_IMB_MASK) && (FlexCAN[index_]->ESR2 & CAN_ESR2_VPS_MASK))
+            if ((fc_->ESR2 & CAN_ESR2_IMB_MASK) && (fc_->ESR2 & CAN_ESR2_VPS_MASK))
             {
                 return true;
             }
@@ -439,7 +442,7 @@ public:
         if (isSuccess(Status))
         {
             /* Enter freeze mode for filter reconfiguration */
-            FlexCAN[index_]->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
+            fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
 
             /* Block for freeze mode entry, halts any transmission or reception */
             if (isSuccess(Status))
@@ -447,19 +450,19 @@ public:
                 /* Reset all previous filter configurations */
                 for (std::size_t j = 0; j < CAN_RAMn_COUNT; ++j)
                 {
-                    FlexCAN[index_]->RAMn[j] = 0;
+                    fc_->RAMn[j] = 0;
                 }
 
                 /* Clear the reception masks before configuring the new ones needed */
                 for (std::size_t j = 0; j < CAN_RXIMR_COUNT; ++j)
                 {
-                    FlexCAN[index_]->RXIMR[j] = 0;
+                    fc_->RXIMR[j] = 0;
                 }
 
                 for (std::size_t j = 0; j < filter_config_length; ++j)
                 {
                     /* Setup reception MB's mask from input argument */
-                    FlexCAN[index_]->RXIMR[j + 2] = filter_config[j].mask;
+                    fc_->RXIMR[j + 2] = filter_config[j].mask;
 
                     /* Setup word 0 (4 Bytes) for ith MB
                      * Extended Data Length      (EDL) = 1
@@ -472,25 +475,25 @@ public:
                      * Data Length Code          (DLC) = 0 ( Valid for transmission only )
                      * Counter Time Stamp (TIME STAMP) = 0 ( Handled by hardware )
                      */
-                    FlexCAN[index_]->RAMn[(j + 2) * MB_Size_Words] =
+                    fc_->RAMn[(j + 2) * MB_Size_Words] =
                         CAN_RAMn_DATA_BYTE_0(0xC4) | CAN_RAMn_DATA_BYTE_1(0x20);
 
                     /* Setup Message buffers 2-7 29-bit extended ID from parameter */
-                    FlexCAN[index_]->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
+                    fc_->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
                 }
 
                 /* Freeze mode exit request */
-                FlexCAN[index_]->MCR &= ~(CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
+                fc_->MCR &= ~(CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
 
                 /* Block for freeze mode exit */
                 if (isSuccess(Status))
                 {
-                    Status = flagPollTimeout_Clear(FlexCAN[index_]->MCR, CAN_MCR_FRZACK_MASK);
+                    Status = flagPollTimeout_Clear(fc_->MCR, CAN_MCR_FRZACK_MASK);
 
                     /* Block until module is ready */
                     if (isSuccess(Status))
                     {
-                        Status = flagPollTimeout_Clear(FlexCAN[index_]->MCR, CAN_MCR_NOTRDY_MASK);
+                        Status = flagPollTimeout_Clear(fc_->MCR, CAN_MCR_NOTRDY_MASK);
                     }
                 }
             }
@@ -540,10 +543,10 @@ public:
         }
 
         /* Poll the Inactive Message Buffer and Valid Priority Status flags before checking for free MB's */
-        if ((FlexCAN[index_]->ESR2 & CAN_ESR2_IMB_MASK) && (FlexCAN[index_]->ESR2 & CAN_ESR2_VPS_MASK))
+        if ((fc_->ESR2 & CAN_ESR2_IMB_MASK) && (fc_->ESR2 & CAN_ESR2_VPS_MASK))
         {
             /* Look for the lowest number free MB */
-            std::uint8_t mb_index = (FlexCAN[index_]->ESR2 & CAN_ESR2_LPTM_MASK) >> CAN_ESR2_LPTM_SHIFT;
+            std::uint8_t mb_index = (fc_->ESR2 & CAN_ESR2_LPTM_MASK) >> CAN_ESR2_LPTM_SHIFT;
 
             /* Proceed with the tranmission */
             Status = messageBuffer_Transmit(mb_index, frames[0]);
@@ -576,7 +579,7 @@ private:
     time::Monotonic resolve_Timestamp(std::uint64_t frame_timestamp)
     {
         /* Harvest the peripheral's current timestamp, this is the 16-bit overflowing source clock */
-        std::uint64_t FlexCAN_timestamp = FlexCAN[index_]->TIMER;
+        std::uint64_t FlexCAN_timestamp = fc_->TIMER;
 
         /* Get an non-overflowing 64-bit timestamp, this is the target clock source */
         std::uint64_t target_source = static_cast<std::uint64_t>(
@@ -622,11 +625,11 @@ private:
             /* FlexCAN natively transmits the bytes in big-endian order, in order to transmit little-endian for
              * UAVCAN, a byte swap is required */
             REV_BYTES_32(native_FrameData[i],
-                         FlexCAN[index_]->RAMn[TX_MB_index * MB_Size_Words + MB_Data_Offset + i]);
+                         fc_->RAMn[TX_MB_index * MB_Size_Words + MB_Data_Offset + i]);
         }
 
         /* Fill up frame ID */
-        FlexCAN[index_]->RAMn[TX_MB_index * MB_Size_Words + 1] = frame.id & CAN_WMBn_ID_ID_MASK;
+        fc_->RAMn[TX_MB_index * MB_Size_Words + 1] = frame.id & CAN_WMBn_ID_ID_MASK;
 
         /* Fill up word 0 of frame and transmit it
          * Extended Data Length       (EDL) = 1
@@ -639,21 +642,25 @@ private:
          * Data Length Code           (DLC) = frame's dlc
          * Counter Time Stamp  (TIME STAMP) = 0 ( Handled by hardware )
          */
-        FlexCAN[index_]->RAMn[TX_MB_index * MB_Size_Words] =
+        fc_->RAMn[TX_MB_index * MB_Size_Words] =
             CAN_RAMn_DATA_BYTE_1(dlc) | CAN_WMBn_CS_DLC(dlc) | CAN_RAMn_DATA_BYTE_0(0xCC);
 
         /* After a successful transmission the interrupt flag of the corresponding message buffer is set, poll with
          * timeout for it */
-        Result Status = flagPollTimeout_Set(FlexCAN[index_]->IFLAG1, 1u << TX_MB_index);
+        Result Status = flagPollTimeout_Set(fc_->IFLAG1, 1u << TX_MB_index);
 
         /* Clear the flag previously polled (W1C register) */
-        FlexCAN[index_]->IFLAG1 |= 1u << TX_MB_index;
+        fc_->IFLAG1 |= 1u << TX_MB_index;
 
         /* Return successful transmission request status */
         return Status;
     }
 
-    unsigned index_;
+    /* Index in the FlexCAN array for this peripheral. */
+    const unsigned index_;
+
+    /* Pointer into the FlexCAN array for this peripheral. */
+    CAN_Type* const fc_;
 
     /* Intermediate array for harvesting the received frame's payload in the ISR */
     volatile std::uint32_t data_ISR_word_[InterfaceGroup::FrameType::MTUBytes / 4u];
@@ -876,13 +883,7 @@ public:
      */
     void isrHandler(std::uint8_t instance)
     {
-        /* Perform the ISR atomically */
-        DISABLE_INTERRUPTS()
-
         get_interface(instance).isrHandler();
-
-        /* Enable interrupts back */
-        ENABLE_INTERRUPTS()
     }
 
     std::uint32_t get_rx_overflows() const
@@ -895,12 +896,12 @@ public:
         return discarded_frames_count;
     }
 
+private:
     S32KFlexCan& get_interface(std::size_t index)
     {
         return *reinterpret_cast<S32KFlexCan*>(&peripheral_storage_[index]);
     }
 
-private:
     typename std::aligned_storage<sizeof(S32KFlexCan), alignof(S32KFlexCan)>::type peripheral_storage_[InterfaceCount];
 };
 
