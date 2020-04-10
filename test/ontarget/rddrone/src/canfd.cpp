@@ -114,92 +114,12 @@ enum MB_bit_to_index : std::uint8_t
     MessageBuffer6 = 0x40, /* Number for the bit of the sixth  MB (1 << 6) */
 };
 
-/*
- * Helper function for block polling a bit flag until it is set with a timeout of 0.2 seconds using a LPIT timer,
- * the argument list and usage reassembles the classic block polling while loop, and instead of using a third
- * argument to decide if it'ss a timed block for a clear or set, the two flavors of the function are provided.
- *
- * param  flagRegister Register where the flag is located.
- * param  flagMask     Mask to AND'nd with the register for isolating the flag.
- * return Result::Success If the flag set before the timeout expiration..
- * return Result::Failure If a timeout ocurred before the desired flag set.
- */
-Result flagPollTimeout_Set(volatile std::uint32_t& flagRegister, std::uint32_t flag_Mask)
-{
-    /* Initialization of delta for timeout measurement */
-    volatile std::uint32_t delta = 0;
-
-    /* Disable LPIT channel 2 for loading */
-    LPIT0->CLRTEN |= LPIT_CLRTEN_CLR_T_EN_2(1);
-
-    /* Load LPIT with its maximum value */
-    LPIT0->TMR[2].TVAL = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK;
-
-    /* Enable LPIT channel 2 for timeout start */
-    LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_2(1);
-
-    /* Start of timed block */
-    while (delta < cycles_timeout)
-    {
-        /* Check if the flag has been set */
-        if (flagRegister & flag_Mask)
-        {
-            return Result::Success;
-        }
-
-        /* Get current value of delta */
-        delta = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK - (LPIT0->TMR[2].CVAL);
-    }
-
-    /* If this section is reached, means timeout ocurred and return error status is returned */
-    return Result::Failure;
-}
-
-/*
- * Helper function for block polling a bit flag until it is cleared with a timeout of 0.2 seconds using a LPIT timer
- *
- * param  flagRegister Register where the flag is located.
- * param  flagMask     Mask to AND'nd with the register for isolating the flag.
- * return Result::Success If the flag cleared before the timeout expiration..
- * return Result::Failure If a timeout ocurred before the desired flag cleared.
- */
-Result flagPollTimeout_Clear(volatile std::uint32_t& flagRegister, std::uint32_t flag_Mask)
-{
-    /* Initialization of delta for timeout measurement */
-    volatile std::uint32_t delta = 0;
-
-    /* Disable LPIT channel 2 for loading */
-    LPIT0->CLRTEN |= LPIT_CLRTEN_CLR_T_EN_2(1);
-
-    /* Load LPIT with its maximum value */
-    LPIT0->TMR[2].TVAL = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK;
-
-    /* Enable LPIT channel 2 for timeout start */
-    LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_2(1);
-
-    /* Start of timed block */
-    while (delta < cycles_timeout)
-    {
-        /* Check if the flag has been set */
-        if (!(flagRegister & flag_Mask))
-        {
-            return Result::Success;
-        }
-
-        /* Get current value of delta */
-        delta = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK - (LPIT0->TMR[2].CVAL);
-    }
-
-    /* If this section is reached, means timeout ocurred and return error status is returned */
-    return Result::Failure;
-}
-
 // +--------------------------------------------------------------------------+
 // | S32KFlexCan
 // +--------------------------------------------------------------------------+
 
 /**
- * Per interface implementation.
+ * Per-interface implementation.
  */
 class S32KFlexCan final
 {
@@ -217,9 +137,9 @@ public:
         PCC->PCCn[PCC_FlexCAN_Index[index_]] = PCC_PCCn_CGC_MASK; /* FlexCAN clock gating */
         fc_->MCR |= CAN_MCR_MDIS_MASK;                      /* Disable FlexCAN module for clock source selection */
         fc_->CTRL1 &= ~CAN_CTRL1_CLKSRC_MASK;               /* Clear any previous clock source configuration */
-        fc_->CTRL1 |= CAN_CTRL1_CLKSRC_MASK;                /* Select SYS_CLK as source (80Mhz)*/
+        fc_->CTRL1 |= CAN_CTRL1_CLKSRC_MASK;                /* Select bus clock as source (40Mhz)*/
         fc_->MCR &= ~CAN_MCR_MDIS_MASK;                     /* Enable FlexCAN peripheral */
-        fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK); /* Request freeze mode etry */
+        fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK); /* Request freeze mode entry */
 
         /* Block for freeze mode entry */
         while (!(fc_->MCR & CAN_MCR_FRZACK_MASK))
@@ -228,34 +148,33 @@ public:
 
         /* Next configurations are only permitted in freeze mode */
         fc_->MCR |= CAN_MCR_FDEN_MASK |          /* Habilitate CANFD feature */
-                   CAN_MCR_FRZ_MASK;            /* Enable freeze mode entry when HALT bit is asserted */
+                    CAN_MCR_FRZ_MASK;            /* Enable freeze mode entry when HALT bit is asserted */
         fc_->CTRL2 |= CAN_CTRL2_ISOCANFDEN_MASK; /* Activate the use of ISO 11898-1 CAN-FD standard */
 
         /* CAN Bit Timing (CBT) configuration for a nominal phase of 1 Mbit/s with 80 time quantas,
             in accordance with Bosch 2012 specification, sample point at 83.75% */
-        fc_->CBT |= CAN_CBT_BTF_MASK |     /* Enable extended bit timing configurations for CAN-FD
-                                                                                                                    for
-                                                        setting     up separetely nominal and data phase */
-                   CAN_CBT_EPRESDIV(0) |  /* Prescaler divisor factor of 1 */
-                   CAN_CBT_EPROPSEG(46) | /* Propagation segment of 47 time quantas */
-                   CAN_CBT_EPSEG1(18) |   /* Phase buffer segment 1 of 19 time quantas */
-                   CAN_CBT_EPSEG2(12) |   /* Phase buffer segment 2 of 13 time quantas */
-                   CAN_CBT_ERJW(12);      /* Resynchronization jump width same as PSEG2 */
+        fc_->CBT |= CAN_CBT_BTF_MASK |     /* Enable extended bit timing configurations for CAN-FD for
+                                              setting up separately nominal and data phase */
+                    CAN_CBT_EPRESDIV(0) |  /* Prescaler divisor factor of 1 */
+                    CAN_CBT_EPROPSEG(46) | /* Propagation segment of 47 time quantas */
+                    CAN_CBT_EPSEG1(18) |   /* Phase buffer segment 1 of 19 time quantas */
+                    CAN_CBT_EPSEG2(12) |   /* Phase buffer segment 2 of 13 time quantas */
+                    CAN_CBT_ERJW(12);      /* Resynchronization jump width same as PSEG2 */
 
         /* CAN-FD Bit Timing (FDCBT) for a data phase of 4 Mbit/s with 20 time quantas,
             in accordance with Bosch 2012 specification, sample point at 75% */
         fc_->FDCBT |= CAN_FDCBT_FPRESDIV(0) | /* Prescaler divisor factor of 1 */
-                     CAN_FDCBT_FPROPSEG(7) | /* Propagation semgment of 7 time quantas
-                                                                             (only register that doesn't add 1) */
-                     CAN_FDCBT_FPSEG1(6) |   /* Phase buffer segment 1 of 7 time quantas */
-                     CAN_FDCBT_FPSEG2(4) |   /* Phase buffer segment 2 of 5 time quantas */
-                     CAN_FDCBT_FRJW(4);      /* Resynchorinzation jump width same as PSEG2 */
+                      CAN_FDCBT_FPROPSEG(7) | /* Propagation segment of 7 time quantas
+                                                 (only register that doesn't add 1) */
+                      CAN_FDCBT_FPSEG1(6) |   /* Phase buffer segment 1 of 7 time quantas */
+                      CAN_FDCBT_FPSEG2(4) |   /* Phase buffer segment 2 of 5 time quantas */
+                      CAN_FDCBT_FRJW(4);      /* Resynchorinzation jump width same as PSEG2 */
 
         /* Additional CAN-FD configurations */
         fc_->FDCTRL |= CAN_FDCTRL_FDRATE_MASK | /* Enable bit rate switch in data phase of frame */
-                      CAN_FDCTRL_TDCEN_MASK |  /* Enable transceiver delay compensation */
-                      CAN_FDCTRL_TDCOFF(5) |   /* Setup 5 cycles for data phase sampling delay */
-                      CAN_FDCTRL_MBDSR0(3);    /* Setup 64 bytes per message buffer (7 MB's) */
+                       CAN_FDCTRL_TDCEN_MASK |  /* Enable transceiver delay compensation */
+                       CAN_FDCTRL_TDCOFF(5) |   /* Setup 5 cycles for data phase sampling delay */
+                       CAN_FDCTRL_MBDSR0(3);    /* Setup 64 bytes per message buffer (7 MB's) */
 
         /* Message buffers are located in a dedicated RAM inside FlexCAN, they aren't affected by reset,
          * so they must be explicitly initialized, they total 128 slots of 4 words each, which sum
@@ -273,9 +192,9 @@ public:
         }
 
         /* Setup maximum number of message buffers as 7, 0th and 1st for transmission and 2nd-6th for RX */
-        fc_->MCR &= ~CAN_MCR_MAXMB_MASK;                     /* Clear previous configuracion of MAXMB, default is 0xF */
+        fc_->MCR &= ~CAN_MCR_MAXMB_MASK;                     /* Clear previous configuration of MAXMB, default is 0xF */
         fc_->MCR |= CAN_MCR_MAXMB(6) | CAN_MCR_SRXDIS_MASK | /* Disable self-reception of frames if ID matches */
-                   CAN_MCR_IRMQ_MASK;                       /* Enable individual message buffer masking */
+                    CAN_MCR_IRMQ_MASK;                       /* Enable individual message buffer masking */
 
         /* Setup Message buffers 2nd-6th for reception and set filters */
         for (std::uint8_t j = 0; j < filter_config_length; j++)
@@ -301,18 +220,7 @@ public:
         }
     }
 
-    ~S32KFlexCan()
-    {
-        /* Disable FlexCAN module */
-        fc_->MCR |= CAN_MCR_MDIS_MASK;
-
-        /* Poll for Low Power ACK, waits for current transmission/reception to finish */
-        while (fc_->MCR, CAN_MCR_LPMACK_MASK)
-            ;
-
-        /* Disable FlexCAN clock gating */
-        PCC->PCCn[PCC_FlexCAN_Index[index_]] &= ~PCC_PCCn_CGC_MASK;
-    }
+    ~S32KFlexCan() = default;
 
     S32KFlexCan(const S32KFlexCan&) = delete;
     S32KFlexCan& operator=(const S32KFlexCan&) = delete;
@@ -342,69 +250,67 @@ public:
         case MessageBuffer6:
             mb_index = 6u; /* Case for 6th MB */
             break;
+        default:
+            // This should never happen.
+            return;
         }
 
-        /* Validate that the index didn't get stuck at 0, this would be invalid since MB's 0th and 1st are TX */
-        if (mb_index)
+        /* Receive a frame only if the buffer its under its capacity */
+        if (frame_ISRbuffer_.size() <= Frame_Capacity)
         {
-            /* Receive a frame only if the buffer its under its capacity */
-            if (frame_ISRbuffer_.size() <= Frame_Capacity)
+            // TODO: use fixed FIFO buffers that are lockless instead of deque
+            // TODO: don't byte-swap in the ISR. Defer this until read.
+            // TODO: See if we can set the timestamp to be ch1 of lpit 1.
+
+            /* Harvest the Message buffer, read of the control and status word locks the MB */
+
+            /* Get the raw DLC from the message buffer that received a frame */
+            std::uint32_t dlc_ISR_raw =
+                ((fc_->RAMn[mb_index * MB_Size_Words]) & CAN_WMBn_CS_DLC_MASK) >> CAN_WMBn_CS_DLC_SHIFT;
+
+            /* Create CAN::FrameDLC type variable from the raw dlc */
+            CAN::FrameDLC dlc_ISR = CAN::FrameDLC(dlc_ISR_raw);
+
+            /* Convert from dlc to data length in bytes */
+            std::uint8_t payloadLength_ISR = InterfaceGroup::FrameType::dlcToLength(dlc_ISR);
+
+            /* Get the id */
+            std::uint32_t id_ISR = (fc_->RAMn[mb_index * MB_Size_Words + 1]) & CAN_WMBn_ID_ID_MASK;
+
+            /* Perform the harvesting of the payload, leveraging from native 32-bit transfers and since the FlexCAN
+             * expects the data to be in big-endian order, a byte swap is required from the little-endian
+             * transmission UAVCAN requirement */
+            for (std::uint8_t i = 0;
+                 i < (payloadLength_ISR >> 2) + std::min(1, static_cast<std::uint8_t>(payloadLength_ISR) & 0x3);
+                 i++)
             {
-                // TODO: use fixed FIFO buffers that are lockless instead of deque
-                // TODO: don't byte-swap in the ISR. Defer this until read.
-                // TODO: See if we can set the timestamp to be ch1 of lpit 1.
-
-                /* Harvest the Message buffer, read of the control and status word locks the MB */
-
-                /* Get the raw DLC from the message buffer that received a frame */
-                std::uint32_t dlc_ISR_raw =
-                    ((fc_->RAMn[mb_index * MB_Size_Words]) & CAN_WMBn_CS_DLC_MASK) >> CAN_WMBn_CS_DLC_SHIFT;
-
-                /* Create CAN::FrameDLC type variable from the raw dlc */
-                CAN::FrameDLC dlc_ISR = CAN::FrameDLC(dlc_ISR_raw);
-
-                /* Convert from dlc to data length in bytes */
-                std::uint8_t payloadLength_ISR = InterfaceGroup::FrameType::dlcToLength(dlc_ISR);
-
-                /* Get the id */
-                std::uint32_t id_ISR = (fc_->RAMn[mb_index * MB_Size_Words + 1]) & CAN_WMBn_ID_ID_MASK;
-
-                /* Perform the harvesting of the payload, leveraging from native 32-bit transfers and since the FlexCAN
-                 * expects the data to be in big-endian order, a byte swap is required from the little-endian
-                 * transmission UAVCAN requirement */
-                for (std::uint8_t i = 0;
-                     i < (payloadLength_ISR >> 2) + std::min(1, static_cast<std::uint8_t>(payloadLength_ISR) & 0x3);
-                     i++)
-                {
-                    REV_BYTES_32(fc_->RAMn[mb_index * MB_Size_Words + MB_Data_Offset + i],
-                                 data_ISR_word_[i]);
-                }
-
-                /* Harvest the frame's 16-bit hardware timestamp */
-                std::uint64_t MB_timestamp = fc_->RAMn[mb_index * MB_Size_Words] & 0xFFFF;
-
-                /* Instantiate monotonic object form a resolved timestamp */
-                time::Monotonic timestamp_ISR = resolve_Timestamp(MB_timestamp);
-
-                /* Create Frame object with constructor */
-                CAN::Frame<CAN::TypeFD::MaxFrameSizeBytes> FrameISR(id_ISR,
-                                                                    reinterpret_cast<std::uint8_t*>(
-                                                                        const_cast<std::uint32_t*>(data_ISR_word_)),
-                                                                    dlc_ISR,
-                                                                    timestamp_ISR);
-
-                /* Insert the frame into the queue */
-                frame_ISRbuffer_.push_back(FrameISR);
-            }
-            else
-            {
-                /* Increment the number of discarded frames due to full RX dequeue */
-                discarded_frames_count_++;
+                REV_BYTES_32(fc_->RAMn[mb_index * MB_Size_Words + MB_Data_Offset + i], data_ISR_word_[i]);
             }
 
-            /* Clear MB interrupt flag (write 1 to clear)*/
-            fc_->IFLAG1 |= (1u << mb_index);
+            /* Harvest the frame's 16-bit hardware timestamp */
+            std::uint64_t MB_timestamp = fc_->RAMn[mb_index * MB_Size_Words] & 0xFFFF;
+
+            /* Instantiate monotonic object form a resolved timestamp */
+            time::Monotonic timestamp_ISR = resolve_Timestamp(MB_timestamp);
+
+            /* Create Frame object with constructor */
+            CAN::Frame<CAN::TypeFD::MaxFrameSizeBytes> FrameISR(id_ISR,
+                                                                reinterpret_cast<std::uint8_t*>(
+                                                                    const_cast<std::uint32_t*>(data_ISR_word_)),
+                                                                dlc_ISR,
+                                                                timestamp_ISR);
+
+            /* Insert the frame into the queue */
+            frame_ISRbuffer_.push_back(FrameISR);
         }
+        else
+        {
+            /* Increment the number of discarded frames due to full RX dequeue */
+            discarded_frames_count_++;
+        }
+
+        /* Clear MB interrupt flag (write 1 to clear)*/
+        fc_->IFLAG1 |= (1u << mb_index);
     }
 
     bool is_ready(bool ignore_write_available)
@@ -430,75 +336,68 @@ public:
     Result reconfigureFilters(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
                               std::size_t filter_config_length)
     {
-        /* Initialize return value status */
-        Result Status = Result::Success;
-
         /* Input validation */
         if (filter_config_length > Filter_Count)
         {
-            Status = Result::BadArgument;
+            return Result::BadArgument;
         }
 
-        if (isSuccess(Status))
+        /* Enter freeze mode for filter reconfiguration */
+        fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
+
+        /* Block for freeze mode entry */
+        while (!(fc_->MCR & CAN_MCR_FRZACK_MASK))
         {
-            /* Enter freeze mode for filter reconfiguration */
-            fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
+        };
 
-            /* Block for freeze mode entry, halts any transmission or reception */
-            if (isSuccess(Status))
-            {
-                /* Reset all previous filter configurations */
-                for (std::size_t j = 0; j < CAN_RAMn_COUNT; ++j)
-                {
-                    fc_->RAMn[j] = 0;
-                }
-
-                /* Clear the reception masks before configuring the new ones needed */
-                for (std::size_t j = 0; j < CAN_RXIMR_COUNT; ++j)
-                {
-                    fc_->RXIMR[j] = 0;
-                }
-
-                for (std::size_t j = 0; j < filter_config_length; ++j)
-                {
-                    /* Setup reception MB's mask from input argument */
-                    fc_->RXIMR[j + 2] = filter_config[j].mask;
-
-                    /* Setup word 0 (4 Bytes) for ith MB
-                     * Extended Data Length      (EDL) = 1
-                     * Bit Rate Switch           (BRS) = 1
-                     * Error State Indicator     (ESI) = 0
-                     * Message Buffer Code      (CODE) = 4 ( Active for reception and empty )
-                     * Substitute Remote Request (SRR) = 0
-                     * ID Extended Bit           (IDE) = 1
-                     * Remote Tx Request         (RTR) = 0
-                     * Data Length Code          (DLC) = 0 ( Valid for transmission only )
-                     * Counter Time Stamp (TIME STAMP) = 0 ( Handled by hardware )
-                     */
-                    fc_->RAMn[(j + 2) * MB_Size_Words] =
-                        CAN_RAMn_DATA_BYTE_0(0xC4) | CAN_RAMn_DATA_BYTE_1(0x20);
-
-                    /* Setup Message buffers 2-7 29-bit extended ID from parameter */
-                    fc_->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
-                }
-
-                /* Freeze mode exit request */
-                fc_->MCR &= ~(CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
-
-                /* Block for freeze mode exit */
-                if (isSuccess(Status))
-                {
-                    Status = flagPollTimeout_Clear(fc_->MCR, CAN_MCR_FRZACK_MASK);
-
-                    /* Block until module is ready */
-                    if (isSuccess(Status))
-                    {
-                        Status = flagPollTimeout_Clear(fc_->MCR, CAN_MCR_NOTRDY_MASK);
-                    }
-                }
-            }
+        /* Reset all previous filter configurations */
+        for (std::size_t j = 0; j < CAN_RAMn_COUNT; ++j)
+        {
+            fc_->RAMn[j] = 0;
         }
-        return Status;
+
+        /* Clear the reception masks before configuring the new ones needed */
+        for (std::size_t j = 0; j < CAN_RXIMR_COUNT; ++j)
+        {
+            fc_->RXIMR[j] = 0;
+        }
+
+        for (std::size_t j = 0; j < filter_config_length; ++j)
+        {
+            /* Setup reception MB's mask from input argument */
+            fc_->RXIMR[j + 2] = filter_config[j].mask;
+
+            /* Setup word 0 (4 Bytes) for ith MB
+             * Extended Data Length      (EDL) = 1
+             * Bit Rate Switch           (BRS) = 1
+             * Error State Indicator     (ESI) = 0
+             * Message Buffer Code      (CODE) = 4 ( Active for reception and empty )
+             * Substitute Remote Request (SRR) = 0
+             * ID Extended Bit           (IDE) = 1
+             * Remote Tx Request         (RTR) = 0
+             * Data Length Code          (DLC) = 0 ( Valid for transmission only )
+             * Counter Time Stamp (TIME STAMP) = 0 ( Handled by hardware )
+             */
+            fc_->RAMn[(j + 2) * MB_Size_Words] = CAN_RAMn_DATA_BYTE_0(0xC4) | CAN_RAMn_DATA_BYTE_1(0x20);
+
+            /* Setup Message buffers 2-7 29-bit extended ID from parameter */
+            fc_->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
+        }
+
+        /* Freeze mode exit request */
+        fc_->MCR &= ~(CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
+
+        /* Block for freeze mode exit */
+        while (fc_->MCR & CAN_MCR_FRZACK_MASK)
+        {
+        };
+
+        /* Block until module is ready */
+        while (fc_->MCR & CAN_MCR_NOTRDY_MASK)
+        {
+        };
+
+        return Result::Success;
     }
 
     Result read(InterfaceGroup::FrameType (&out_frames)[InterfaceGroup::RxFramesLen], std::size_t& out_frames_read)
@@ -510,7 +409,8 @@ public:
         /* Check if the ISR buffer isn't empty */
         if (!frame_ISRbuffer_.empty())
         {
-            // TODO handle where RxFramesLen > 1
+            static_assert(InterfaceGroup::RxFramesLen == 1,
+                          "We did not implement reading more than one message at a time.");
 
             /* Get the front element of the queue buffer */
             out_frames[0] = frame_ISRbuffer_.front();
@@ -548,11 +448,14 @@ public:
             /* Look for the lowest number free MB */
             std::uint8_t mb_index = (fc_->ESR2 & CAN_ESR2_LPTM_MASK) >> CAN_ESR2_LPTM_SHIFT;
 
+            static_assert(InterfaceGroup::TxFramesLen == 1,
+                          "We did not implement writing more than one message at a time.");
+
             /* Proceed with the tranmission */
             Status = messageBuffer_Transmit(mb_index, frames[0]);
 
             /* Argument assignment to 1 Frame transmitted successfully */
-            out_frames_written = isSuccess(Status) ? InterfaceGroup::TxFramesLen : 0;
+            out_frames_written = isSuccess(Status) ? 1 : 0;
         }
 
         /* Return status code */
@@ -578,6 +481,7 @@ private:
      */
     time::Monotonic resolve_Timestamp(std::uint64_t frame_timestamp)
     {
+        // TODO: can we enable quanta-level accuracy here by chaining the timer?
         /* Harvest the peripheral's current timestamp, this is the 16-bit overflowing source clock */
         std::uint64_t FlexCAN_timestamp = fc_->TIMER;
 
@@ -624,8 +528,7 @@ private:
         {
             /* FlexCAN natively transmits the bytes in big-endian order, in order to transmit little-endian for
              * UAVCAN, a byte swap is required */
-            REV_BYTES_32(native_FrameData[i],
-                         fc_->RAMn[TX_MB_index * MB_Size_Words + MB_Data_Offset + i]);
+            REV_BYTES_32(native_FrameData[i], fc_->RAMn[TX_MB_index * MB_Size_Words + MB_Data_Offset + i]);
         }
 
         /* Fill up frame ID */
@@ -645,15 +548,8 @@ private:
         fc_->RAMn[TX_MB_index * MB_Size_Words] =
             CAN_RAMn_DATA_BYTE_1(dlc) | CAN_WMBn_CS_DLC(dlc) | CAN_RAMn_DATA_BYTE_0(0xCC);
 
-        /* After a successful transmission the interrupt flag of the corresponding message buffer is set, poll with
-         * timeout for it */
-        Result Status = flagPollTimeout_Set(fc_->IFLAG1, 1u << TX_MB_index);
-
-        /* Clear the flag previously polled (W1C register) */
-        fc_->IFLAG1 |= 1u << TX_MB_index;
-
         /* Return successful transmission request status */
-        return Status;
+        return Result::Success;
     }
 
     /* Index in the FlexCAN array for this peripheral. */
@@ -715,6 +611,7 @@ public:
         /* Start the timers */
         LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_0(1) | LPIT_SETTEN_SET_T_EN_1(1);
 
+        // TODO: check the datasheet on this one
         /* Verify that the least significant 32-bit timer is counting (not locked at 0xFFFFFFFF) */
         while (LPIT0->TMR[0].CVAL == LPIT_TMR_CVAL_TMR_CUR_VAL_MASK)
         {
@@ -765,22 +662,6 @@ public:
         {
             reinterpret_cast<S32KFlexCan*>(&peripheral_storage_[i])->~S32KFlexCan();
         }
-
-        /* Reset LPIT timer peripheral, (resets all except the MCR register) */
-        LPIT0->MCR |= LPIT_MCR_SW_RST(1);
-
-        /* Verify that the timer did reset (locked at 0xFFFFFFFF) */
-        while (LPIT0->TMR[0].CVAL != LPIT_TMR_CVAL_TMR_CUR_VAL_MASK)
-        {
-        }
-        /* Clear the reset bit since it isn't cleared automatically */
-        LPIT0->MCR &= ~LPIT_MCR_SW_RST_MASK;
-
-        /* Disable the clock to the LPIT's timers */
-        LPIT0->MCR &= ~LPIT_MCR_M_CEN_MASK;
-
-        /* Disable LPIT clock gating */
-        PCC->PCCn[PCC_LPIT_INDEX] &= ~PCC_PCCn_CGC_MASK;
     }
 
     virtual std::uint_fast8_t getInterfaceCount() const override
@@ -868,6 +749,7 @@ public:
             }
 
             /* Get current value of delta */
+            // TODO: verify the time units here.
             delta = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK - (LPIT0->TMR[3].CVAL);
         }
 
@@ -930,8 +812,6 @@ Result InterfaceManager::startInterfaceGroup(const typename InterfaceGroupType::
         return Result::BadArgument;
     }
 
-    // TODO : NVIC clear pending then disable CAN rx interrupts.
-
     S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>* singleton_group = _group_singleton;
 
     if (singleton_group != nullptr)
@@ -953,25 +833,8 @@ Result InterfaceManager::startInterfaceGroup(const typename InterfaceGroupType::
 
 Result InterfaceManager::stopInterfaceGroup(InterfaceGroupPtrType& inout_group)
 {
-    // TODO : NVIC clear pending then disable CAN rx interrupts.
-
-    S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>* singleton_group = _group_singleton;
-
-    if (singleton_group == nullptr)
-    {
-        // Called twice or before startInterfaceGroup
-        return Result::Failure;
-    }
-    else if (inout_group != static_cast<InterfaceGroupPtrType>(singleton_group))
-    {
-        // Called with a group other than the one provided in startInterfaceGroup
-        return Result::BadArgument;
-    }
-
-    _group_singleton = nullptr;
-    inout_group      = nullptr;
-    singleton_group->~S32KInterfaceGroupImpl();
-    return Result::Success;
+    (void) inout_group;
+    return Result::NotImplemented;
 }
 
 std::size_t InterfaceManager::getMaxFrameFilters() const

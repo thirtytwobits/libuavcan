@@ -38,7 +38,7 @@ set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -T ${MCU_LINKER_SCRIPT}")
 # | BUILD TESTS ON-TARGET TESTING
 # +---------------------------------------------------------------------------+
 
-function(define_ontarget_unit_test ARG_TEST_NAME ARG_TEST_SOURCE)
+function(define_ontarget_unit_test ARG_TEST_NAME ARG_TEST_SOURCE ARG_NODE_ID)
 
     set(LOCAL_TEST_ELF "${ARG_TEST_NAME}.elf")
     set(LOCAL_TEST_HEX "${ARG_TEST_NAME}.hex")
@@ -47,6 +47,8 @@ function(define_ontarget_unit_test ARG_TEST_NAME ARG_TEST_SOURCE)
     add_executable(${LOCAL_TEST_ELF} ${ARG_TEST_SOURCE} ${SOURCE_FILES})
 
     target_link_libraries(${LOCAL_TEST_ELF} dsdl-regulated)
+
+    target_compile_definitions(${LOCAL_TEST_ELF} PUBLIC -DLIBUAVCAN_TEST_NODE_ID=${ARG_NODE_ID})
 
     set_target_properties(${LOCAL_TEST_ELF}
                     PROPERTIES
@@ -78,13 +80,10 @@ function(define_ontarget_unit_test ARG_TEST_NAME ARG_TEST_SOURCE)
 
 endfunction()
 
-file(GLOB NATIVE_TESTS
-     LIST_DIRECTORIES false
-     RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}
-     ${CMAKE_CURRENT_SOURCE_DIR}/ontarget/rddrone/src/test_*.cpp
-)
+define_ontarget_unit_test(test_telephone_a
+                          ${CMAKE_CURRENT_SOURCE_DIR}/ontarget/rddrone/src/test_telephone.cpp
+                          1)
+define_ontarget_unit_test(test_telephone_b
+                          ${CMAKE_CURRENT_SOURCE_DIR}/ontarget/rddrone/src/test_telephone.cpp
+                          2)
 
-foreach(NATIVE_TEST ${NATIVE_TESTS})
-    get_filename_component(NATIVE_TEST_NAME ${NATIVE_TEST} NAME_WE)
-    define_ontarget_unit_test(${NATIVE_TEST_NAME} ${NATIVE_TEST})
-endforeach()

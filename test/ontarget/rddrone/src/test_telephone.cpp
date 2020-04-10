@@ -2,23 +2,7 @@
  * of aumototive-grade MCU's, running CANFD at 4Mbit/s in data phase
  *
  * Description:
- * A frame object is transferred between two S32K142 evaluation boards
- * (EVB's) called nodes, NODE_A kickstarts the transmission of a 64-byte
- * payload size frame initially of zeroes, and NODE_B receives it and
- * interprets the last 64 bits of it as a uint64 number, then adds 1 to it
- * and transmit it back to NODE_A, which repeats the process; in an
- * oscilloscope the payload's last 64 bits are viewed as a count of the
- * times a node has received the frame bouncing between the nodes, and
- * each 1000 times a node has received it, toggles a green LED from the
- * board.
- *
- * Time for a single frame for transmission, reception and retransmission:
- * 440us, to toggle the LED it takes 0.88 seconds, (2000 frames transfer),
- * to reach 16^5 transfers it takes 7 minutes, to reach the 32nd bit
- * 21.87 days and to overflow the 64-bit wide count, 160,860 centuries.
- *
- * Instructions: Import the project to S32DS, change the macro
- * to NODE_A or NODE_B to build for one of the boards and flash.
+ * Two rddrone_uavcan boards exchange messages with each other.
  */
 
 /* Include media layer driver for NXP S32K MCU */
@@ -60,9 +44,6 @@ extern "C"
 
 }  // extern "C"
 
-/* Choose for which board of the demo to target, NODE_A or NODE_B */
-#define NODE_A
-
 /* Function that takes the payload and adds 1 */
 void payload_bounceADD(std::uint8_t* rx_payload)
 {
@@ -103,19 +84,17 @@ int main()
     LPUART1_transmit_string("Running LPUART example\n\r");     /* Transmit char string */
     LPUART1_transmit_string("Input character to echo...\n\r"); /* Transmit char string */
 
-#if defined(NODE_A)
+#if !defined(LIBUAVCAN_TEST_NODE_ID)
     /* ID for the current UAVCAN node */
     constexpr std::uint32_t Node_ID = 0xC0C0A;
-    /* ID of the frame to transmit */
-    constexpr std::uint32_t demo_FrameID = 0xC0FFE;
 
-#elif defined(NODE_B)
+#else
     /* ID and for the current UAVCAN node */
-    constexpr std::uint32_t Node_ID = 0xC0FFE;
-    /* ID of the frame to transmit */
-    constexpr std::uint32_t demo_FrameID = 0xC0C0A;
+    constexpr std::uint32_t Node_ID = LIBUAVCAN_TEST_NODE_ID;
 
 #endif
+
+    constexpr std::uint32_t TestMessageId      = 0xC0FFE;
 
     constexpr std::uint32_t Node_Mask          = 0xFFFFF; /* All care bits mask for frame filtering */
     constexpr std::size_t   Node_Filters_Count = 1u;      /* Number of ID's that the node will filter in */
@@ -146,7 +125,7 @@ int main()
     libuavcan::media::S32K::InterfaceManager::InterfaceGroupPtrType demo_InterfacePtr;
 
     /* Create a frame that will reach NODE_B ID */
-    libuavcan::media::S32K::InterfaceGroup::FrameType bouncing_frame_obj(demo_FrameID,
+    libuavcan::media::S32K::InterfaceGroup::FrameType bouncing_frame_obj(TestMessageId,
                                                                          reinterpret_cast<std::uint8_t*>(demo_payload),
                                                                          demo_DLC);
 
@@ -166,15 +145,11 @@ int main()
 
     greenLED_init();
 
-/* Node A kickstarts */
-#ifdef NODE_A
-
     std::size_t frames_wrote = 0;
     if (libuavcan::isSuccess(status))
     {
         demo_InterfacePtr->write(First_Instance, bouncing_frame, Node_Frame_Count, frames_wrote);
     }
-#endif
 
     /* Loop for retransmission of the frame */
     for (;;)
@@ -201,7 +176,7 @@ int main()
             std::size_t frames_wrote;
 
             /* Changed frame's ID for returning it back */
-            bouncing_frame[0].id = demo_FrameID;
+            bouncing_frame[0].id = TestMessageId;
 
             payload_bounceADD(bouncing_frame[0].data);
 
