@@ -118,32 +118,43 @@ enum MB_bit_to_index : unsigned int
 class S32KFlexCan final
 {
 public:
-    S32KFlexCan(unsigned                                                                peripheral_index,
-                const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
-                std::size_t                                                             filter_config_length)
+    S32KFlexCan(unsigned peripheral_index)
         : index_(peripheral_index)
         , fc_(FlexCAN[index_])
         , data_ISR_word_{0}
         , discarded_frames_count_(0)
         , frame_ISRbuffer_()
+    {}
+
+    ~S32KFlexCan() = default;
+
+    S32KFlexCan(const S32KFlexCan&) = delete;
+    S32KFlexCan& operator=(const S32KFlexCan&) = delete;
+    S32KFlexCan(S32KFlexCan&&)                 = delete;
+    S32KFlexCan& operator=(S32KFlexCan&&) = delete;
+
+    /**
+     * Configure and start the interface.
+     */
+    Result start(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
+                 std::size_t                                                             filter_config_length)
     {
         /* FlexCAN instance initialization */
         PCC->PCCn[PCC_FlexCAN_Index[index_]] = PCC_PCCn_CGC_MASK; /* FlexCAN clock gating */
-        fc_->MCR |= CAN_MCR_MDIS_MASK;                      /* Disable FlexCAN module for clock source selection */
-        fc_->CTRL1 &= ~CAN_CTRL1_CLKSRC_MASK;               /* Clear any previous clock source configuration */
-        fc_->CTRL1 |= CAN_CTRL1_CLKSRC_MASK;                /* Select bus clock as source (40Mhz)*/
-        fc_->MCR &= ~CAN_MCR_MDIS_MASK;                     /* Enable FlexCAN peripheral */
-        fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK); /* Request freeze mode entry */
+        fc_->MCR |= CAN_MCR_MDIS_MASK;        /* Disable FlexCAN module for clock source selection */
+        fc_->CTRL1 &= ~CAN_CTRL1_CLKSRC_MASK; /* Clear any previous clock source configuration */
+        fc_->CTRL1 |= CAN_CTRL1_CLKSRC_MASK;  /* Select bus clock as source (40Mhz)*/
 
-        /* Block for freeze mode entry */
-        while (!(fc_->MCR & CAN_MCR_FRZACK_MASK))
-        {
-        };
+        enter_freeze_mode();
 
         /* Next configurations are only permitted in freeze mode */
         fc_->MCR |= CAN_MCR_FDEN_MASK |          /* Habilitate CANFD feature */
                     CAN_MCR_FRZ_MASK;            /* Enable freeze mode entry when HALT bit is asserted */
         fc_->CTRL2 |= CAN_CTRL2_ISOCANFDEN_MASK; /* Activate the use of ISO 11898-1 CAN-FD standard */
+        if (index_ == 0)
+        {
+            fc_->CTRL2 |= CAN_CTRL2_TIMER_SRC_MASK;
+        }
 
         /* CAN Bit Timing (CBT) configuration for a nominal phase of 1 Mbit/s with 80 time quantas,
             in accordance with Bosch 2012 specification, sample point at 83.75% */
@@ -190,55 +201,14 @@ public:
         fc_->MCR |= CAN_MCR_MAXMB(6) | CAN_MCR_SRXDIS_MASK | /* Disable self-reception of frames if ID matches */
                     CAN_MCR_IRMQ_MASK;                       /* Enable individual message buffer masking */
 
-        /* Setup Message buffers 2nd-6th for reception and set filters */
-        for (std::uint8_t j = 0; j < filter_config_length; j++)
-        {
-            /* Setup reception MB's mask from input argument */
-            fc_->RXIMR[j + 2] = filter_config[j].mask;
-
-            /* Setup word 0 (4 Bytes) for ith MB
-             * Extended Data Length      (EDL) = 1
-             * Bit Rate Switch           (BRS) = 1
-             * Error State Indicator     (ESI) = 0
-             * Message Buffer Code      (CODE) = 4 ( Active for reception and empty )
-             * Substitute Remote Request (SRR) = 0
-             * ID Extended Bit           (IDE) = 1
-             * Remote Tx Request         (RTR) = 0
-             * Data Length Code          (DLC) = 0 ( Valid for transmission only )
-             * Counter Time Stamp (TIME STAMP) = 0 ( Handled by hardware )
-             */
-            fc_->RAMn[(j + 2) * MB_Size_Words] = CAN_RAMn_DATA_BYTE_0(0xC4) | CAN_RAMn_DATA_BYTE_1(0x20);
-
-            /* Setup Message buffers 2-7 29-bit extended ID from parameter */
-            fc_->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
-        }
-
         /* Enable interrupt in NVIC for FlexCAN reception with default priority (ID = 81) */
         S32_NVIC->ISER[FlexCAN_NVIC_Indices[index_][0]] = FlexCAN_NVIC_Indices[index_][1];
 
         /* Enable interrupts of reception MB's (0b1111100) */
         fc_->IMASK1 = CAN_IMASK1_BUF31TO0M(124);
 
-        /* Exit from freeze mode */
-        fc_->MCR &= ~(CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
-
-        /* Block for freeze mode exit */
-        while (fc_->MCR & CAN_MCR_FRZACK_MASK)
-        {
-        };
-
-        /* Block for module ready flag */
-        while (fc_->MCR & CAN_MCR_NOTRDY_MASK)
-        {
-        };
+        return reconfigureFilters(filter_config, filter_config_length);
     }
-
-    ~S32KFlexCan() = default;
-
-    S32KFlexCan(const S32KFlexCan&) = delete;
-    S32KFlexCan& operator=(const S32KFlexCan&) = delete;
-    S32KFlexCan(S32KFlexCan&&)                 = delete;
-    S32KFlexCan& operator=(S32KFlexCan&&) = delete;
 
     void isrHandler()
     {
@@ -355,13 +325,7 @@ public:
             return Result::BadArgument;
         }
 
-        /* Enter freeze mode for filter reconfiguration */
-        fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
-
-        /* Block for freeze mode entry */
-        while (!(fc_->MCR & CAN_MCR_FRZACK_MASK))
-        {
-        };
+        enter_freeze_mode();
 
         /* Reset all previous filter configurations */
         for (std::size_t j = 0; j < CAN_RAMn_COUNT; ++j)
@@ -397,18 +361,7 @@ public:
             fc_->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
         }
 
-        /* Freeze mode exit request */
-        fc_->MCR &= ~(CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
-
-        /* Block for freeze mode exit */
-        while (fc_->MCR & CAN_MCR_FRZACK_MASK)
-        {
-        };
-
-        /* Block until module is ready */
-        while (fc_->MCR & CAN_MCR_NOTRDY_MASK)
-        {
-        };
+        exit_freeze_mode();
 
         return Result::Success;
     }
@@ -481,6 +434,36 @@ public:
     }
 
 private:
+    /**
+     * See section 53.1.8.1 of the reference manual.
+     * Idempotent helper method for entering freeze mode.
+     */
+    void enter_freeze_mode()
+    {
+        if (fc_->MCR & CAN_MCR_FRZACK_MASK)
+        {
+            // already in freeze mode
+            return;
+        }
+
+        fc_->MCR &=
+            ~CAN_MCR_MDIS_MASK; /* Unset disable bit (per procedure in section 53.1.8 of the reference manual) */
+        fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK); /* Request freeze mode entry */
+
+        /* Block for freeze mode entry */
+        while (!(fc_->MCR & CAN_MCR_FRZACK_MASK))
+        {
+        };
+        // TODO: implement the full freeze mode specification detailed by 53.1.8 of the reference manual including
+        //       timeout with soft-reset.
+    }
+
+    void exit_freeze_mode()
+    {
+        /* Exit from freeze mode */
+        fc_->MCR &= ~(CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
+    }
+
     /*
      * Helper function for resolving the timestamp of a received frame from FlexCAN'S 16-bit overflowing timer.
      * Based on Pyuavcan's SourceTimeResolver class from which the terms source and target are used. Note: A maximum
@@ -600,8 +583,12 @@ class S32KInterfaceGroupImpl : public InterfaceGroup
 public:
     static_assert(InterfaceCount > 0, "Must have at least one CAN interface to define this type.");
 
-    S32KInterfaceGroupImpl(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
-                           std::size_t                                                             filter_config_length)
+    S32KInterfaceGroupImpl()
+        : peripheral_storage_{}
+    {}
+
+    Result start(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
+                 std::size_t                                                             filter_config_length)
     {
         /* CAN frames timestamping 64-bit timer initialization using chained LPIT channel 0 and 1 */
 
@@ -633,10 +620,20 @@ public:
         {
         };
 
+        bool did_one_succeed = false;
+        bool did_any_fail    = false;
         /* FlexCAN instances initialization */
         for (std::size_t i = 0; i < InterfaceCount; ++i)
         {
-            new (&peripheral_storage_[i]) S32KFlexCan(i, filter_config, filter_config_length);
+            S32KFlexCan* interface = new (&peripheral_storage_[i]) S32KFlexCan(i);
+            if (isSuccess(interface->start(filter_config, filter_config_length)))
+            {
+                did_one_succeed = true;
+            }
+            else
+            {
+                did_any_fail = true;
+            }
         }
 
         /* Clock gating and multiplexing for the pins used */
@@ -669,6 +666,14 @@ public:
         PORTB->PCR[12] |= PORT_PCR_MUX(4);               /* CAN2_RX at PORT B pin 12 */
         PORTB->PCR[13] |= PORT_PCR_MUX(4);               /* CAN2_TX at PORT B pin 13 */
 #endif
+        if (did_any_fail)
+        {
+            return (did_one_succeed) ? Result::SuccessPartial : Result::Failure;
+        }
+        else
+        {
+            return Result::Success;
+        }
     }
 
     virtual ~S32KInterfaceGroupImpl()
@@ -838,13 +843,14 @@ Result InterfaceManager::startInterfaceGroup(const typename InterfaceGroupType::
 
     /* If function ended successfully, return address of object member of type InterfaceGroup */
     S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>* initialized_group =
-        new (&_group_storage) S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>(filter_config, filter_config_length);
+        new (&_group_storage) S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>();
+    Result status = initialized_group->start(filter_config, filter_config_length);
 
     _group_singleton = initialized_group;
     out_group        = initialized_group;
 
     /* Return code for start of InterfaceGroup */
-    return Result::Success;
+    return status;
 }
 
 Result InterfaceManager::stopInterfaceGroup(InterfaceGroupPtrType& inout_group)
