@@ -23,8 +23,8 @@
         {
             "type": "cortex-debug",
             "cwd": "${workspaceRoot}",
-            "executable": "${workspaceRoot}/test/build/test_telephone.elf",
-            "name": "Debug tests",
+            "executable": "${workspaceRoot}/test/build/test_telephone_a.elf",
+            "name": "Debug test_telephone a",
             "request": "launch",
             "servertype": "jlink",
             "device": "S32K146",

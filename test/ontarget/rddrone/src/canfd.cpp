@@ -72,14 +72,11 @@ namespace S32K
 {
 namespace
 {
-/* Number of capable CAN-FD FlexCAN instances */
-constexpr static std::uint_fast8_t CANFD_Count = TARGET_S32K_CANFD_COUNT;
-
 /* Tunable frame capacity for the ISR reception FIFO, each frame adds 80 bytes of required .bss memory */
 constexpr static std::size_t Frame_Capacity = 40u;
 
 /* Number of filters supported by a single FlexCAN instance */
-constexpr static std::uint8_t Filter_Count = 5u;
+constexpr static unsigned int Filter_Count = 5u;
 
 /* Lookup table for NVIC IRQ numbers for each FlexCAN instance */
 constexpr static std::uint32_t FlexCAN_NVIC_Indices[][2u] = {{2u, 0x20000}, {2u, 0x1000000}, {2u, 0x80000000}};
@@ -88,22 +85,19 @@ constexpr static std::uint32_t FlexCAN_NVIC_Indices[][2u] = {{2u, 0x20000}, {2u,
 constexpr static CAN_Type* FlexCAN[] = CAN_BASE_PTRS;
 
 /* Lookup table for FlexCAN indices in PCC register */
-constexpr static std::uint8_t PCC_FlexCAN_Index[] = {36u, 37u, 43u};
+constexpr static unsigned int PCC_FlexCAN_Index[] = {36u, 37u, 43u};
 
 /* Size in words (4 bytes) of the offset between the location of message buffers in FlexCAN's dedicated RAM */
-constexpr static std::uint8_t MB_Size_Words = 18u;
+constexpr static unsigned int MB_Size_Words = 18u;
 
 /* Offset in words for reaching the payload of a message buffer */
-constexpr static std::uint8_t MB_Data_Offset = 2u;
-
-/* Number of cycles to wait for the timed polls, corresponding to a timeout of 1/(80Mhz) * 2^24 = 0.2 seconds approx */
-constexpr static std::uint32_t cycles_timeout = 0xFFFFFF;
+constexpr static unsigned int MB_Data_Offset = 2u;
 
 /*
  * Enumeration for converting from a bit number to an index, used for some registers where a bit flag for a nth
  * message buffer is represented as a bit left shifted nth times. e.g. 2nd MB is 0b100 = 4 = (1 << 2)
  */
-enum MB_bit_to_index : std::uint8_t
+enum MB_bit_to_index : unsigned int
 {
     MessageBuffer0 = 0x1,  /* Number representing the bit for the zeroth MB (1 << 2) */
     MessageBuffer1 = 0x2,  /* Number for the bit of the first  MB (1 << 3) */
@@ -218,6 +212,25 @@ public:
             /* Setup Message buffers 2-7 29-bit extended ID from parameter */
             fc_->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
         }
+
+        /* Enable interrupt in NVIC for FlexCAN reception with default priority (ID = 81) */
+        S32_NVIC->ISER[FlexCAN_NVIC_Indices[index_][0]] = FlexCAN_NVIC_Indices[index_][1];
+
+        /* Enable interrupts of reception MB's (0b1111100) */
+        fc_->IMASK1 = CAN_IMASK1_BUF31TO0M(124);
+
+        /* Exit from freeze mode */
+        fc_->MCR &= ~(CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
+
+        /* Block for freeze mode exit */
+        while (fc_->MCR & CAN_MCR_FRZACK_MASK)
+        {
+        };
+
+        /* Block for module ready flag */
+        while (fc_->MCR & CAN_MCR_NOTRDY_MASK)
+        {
+        };
     }
 
     ~S32KFlexCan() = default;
@@ -517,8 +530,11 @@ private:
         const std::uint32_t dlc =
             static_cast<std::underlying_type<libuavcan::media::CAN::FrameDLC>::type>(frame.getDLC());
 
+        static_assert(InterfaceGroup::FrameType::MTUBytes % 4 == 0,
+                      "We use optimizations that assume 4-word access to the frame buffer.");
+
         /* Casting from uint8 to native uint32 for faster payload transfer to transmission message buffer */
-        std::uint32_t* native_FrameData = reinterpret_cast<std::uint32_t*>(const_cast<std::uint8_t*>(frame.data));
+        const std::uint32_t* native_FrameData = reinterpret_cast<const std::uint32_t*>(frame.data);
 
         /* Fill up the payload's bytes, including the ones that don't add up to a full word e.g. 1,2,3,5,6,7 byte
          * data length payloads */
@@ -666,7 +682,7 @@ public:
 
     virtual std::uint_fast8_t getInterfaceCount() const override
     {
-        return CANFD_Count;
+        return TARGET_S32K_CANFD_COUNT;
     }
 
     virtual Result write(std::uint_fast8_t interface_index,

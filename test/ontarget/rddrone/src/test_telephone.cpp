@@ -75,7 +75,7 @@ void greenLED_init(void)
 int main()
 {
     WDOG_disable();        /* Disable WDOG */
-    SOSC_init_8MHz();      /* Initialize system oscilator for 8 MHz xtal */
+    SOSC_init_8MHz();      /* Initialize system oscillator for 8 MHz xtal */
     SPLL_init_160MHz();    /* Initialize SPLL to 160 MHz with 8 MHz SOSC */
     NormalRUNmode_80MHz(); /* Init clocks: 80 MHz sysclk & core, 40 MHz bus, 20 MHz flash */
     PORT_init();           /* Configure ports */
@@ -112,7 +112,7 @@ int main()
     /* 64-byte payload that will be exchanged between the nodes */
     std::uint32_t demo_payload[payload_length / 4];
 
-    std::fill(demo_payload, demo_payload + payload_length, 0);
+    std::fill(demo_payload, demo_payload + (payload_length / 4), 0);
     std::uint32_t* a = &demo_payload[56];
     std::uint32_t* b = &demo_payload[60];
     *a               = (4 << 24) | (3 << 16) | (2 << 8) | 1;
