@@ -317,7 +317,7 @@ public:
 
     S32KFlexCan(const S32KFlexCan&) = delete;
     S32KFlexCan& operator=(const S32KFlexCan&) = delete;
-    S32KFlexCan(S32KFlexCan&&)    = delete;
+    S32KFlexCan(S32KFlexCan&&)                 = delete;
     S32KFlexCan& operator=(S32KFlexCan&&) = delete;
 
     void isrHandler()
@@ -424,7 +424,8 @@ public:
         return false;
     }
 
-    Result reconfigureFilters(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config, std::size_t filter_config_length)
+    Result reconfigureFilters(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
+                              std::size_t filter_config_length)
     {
         /* Initialize return value status */
         Result Status = Result::Success;
@@ -438,7 +439,7 @@ public:
         if (isSuccess(Status))
         {
             /* Enter freeze mode for filter reconfiguration */
-            FlexCAN[i]->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
+            FlexCAN[index_]->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
 
             /* Block for freeze mode entry, halts any transmission or reception */
             if (isSuccess(Status))
@@ -452,7 +453,7 @@ public:
                 /* Clear the reception masks before configuring the new ones needed */
                 for (std::size_t j = 0; j < CAN_RXIMR_COUNT; ++j)
                 {
-                    FlexCAN[i]->RXIMR[j] = 0;
+                    FlexCAN[index_]->RXIMR[j] = 0;
                 }
 
                 for (std::size_t j = 0; j < filter_config_length; ++j)
@@ -494,405 +495,420 @@ public:
                 }
             }
         }
+        return Status;
+    }
 
-        Result read(FrameType(&out_frames)[InterfaceGroup::RxFramesLen], std::size_t & out_frames_read)
-        {
-            /* Initialize return value and out_frames_read output reference value */
-            Result status   = Result::SuccessNothing;
-            out_frames_read = 0;
-
-            /* Check if the ISR buffer isn't empty */
-            if (!frame_ISRbuffer_.empty())
-            {
-                // TODO handle where RxFramesLen > 1
-
-                /* Get the front element of the queue buffer */
-                out_frames[0] = frame_ISRbuffer_.front();
-
-                /* Pop the front element of the queue buffer */
-                frame_ISRbuffer_.pop_front();
-
-                /* Default RX number of frames read at once by this implementation is 1 */
-                out_frames_read = InterfaceGroup::RxFramesLen;
-
-                /* If read is successful, status is success */
-                status = Result::Success;
-            }
-
-            /* Return status code */
-            return status;
-        }
-
-        Result write(const FrameType(&frames)[InterfaceGroup::TxFramesLen],
-                     std::size_t  frames_len,
-                     std::size_t& out_frames_written)
-        {
-            /* Initialize return value status */
-            Result Status = Result::BufferFull;
-
-            /* Input validation */
-            if (frames_len > InterfaceGroup::TxFramesLen)
-            {
-                Status = Result::BadArgument;
-            }
-
-            /* Poll the Inactive Message Buffer and Valid Priority Status flags before checking for free MB's */
-            if ((FlexCAN[index_]->ESR2 & CAN_ESR2_IMB_MASK) && (FlexCAN[index_]->ESR2 & CAN_ESR2_VPS_MASK))
-            {
-                /* Look for the lowest number free MB */
-                std::uint8_t mb_index = (FlexCAN[index_]->ESR2 & CAN_ESR2_LPTM_MASK) >> CAN_ESR2_LPTM_SHIFT;
-
-                /* Proceed with the tranmission */
-                Status = messageBuffer_Transmit(mb_index, frames[0]);
-
-                /* Argument assignment to 1 Frame transmitted successfully */
-                out_frames_written = isSuccess(Status) ? TxFramesLen : 0;
-            }
-
-            /* Return status code */
-            return Status;
-        }
-
-    private:
-        /*
-         * Helper function for resolving the timestamp of a received frame from FlexCAN'S 16-bit overflowing timer.
-         * Based on Pyuavcan's SourceTimeResolver class from which the terms source and target are used. Note: A maximum
-         * of 820 microseconds is allowed for the reception ISR to reach this function starting from a successful frame
-         * reception. The computation relies in that no more than a full period from the 16-bit timestamping timer
-         * running at 80Mhz have passed, this could occur in deadlocks or priority inversion scenarios since 820 uSecs
-         * constitute a significant amount of cycles, if this happens, timestamps would stop being monotonic. param
-         * frame_timestamp Source clock read from the FlexCAN's peripheral timer. param  instance        The interface
-         * instance number used by the ISR return time::Monotonic 64-bit timestamp resolved from 16-bit Flexcan's timer
-         * samples.
-         */
-        time::Monotonic resolve_Timestamp(std::uint64_t frame_timestamp)
-        {
-            /* Harvest the peripheral's current timestamp, this is the 16-bit overflowing source clock */
-            std::uint64_t FlexCAN_timestamp = FlexCAN[index_]->TIMER;
-
-            /* Get an non-overflowing 64-bit timestamp, this is the target clock source */
-            std::uint64_t target_source =
-                static_cast<std::uint64_t>((static_cast<std::uint64_t>(0xFFFFFFFF - LPIT0->TMR[1].CVAL) << 32) |
-                                           (0xFFFFFFFF - LPIT0->TMR[0].CVAL));
-
-            /* Compute the delta of time that occurred in the source clock */
-            std::uint64_t source_delta = FlexCAN_timestamp > frame_timestamp ? FlexCAN_timestamp - frame_timestamp
-                                                                             : frame_timestamp - FlexCAN_timestamp;
-
-            /* Resolve the received frame's absolute timestamp and divide by 80 due the 80Mhz clock source
-             * of both the source and target timers for converting them into the desired microseconds resolution */
-            std::uint64_t resolved_timestamp_ISR = (target_source - source_delta) / 80;
-
-            /* Instantiate the required Monotonic object from the resolved timestamp */
-            return time::Monotonic::fromMicrosecond(resolved_timestamp_ISR);
-        }
-
-        /** @fn
-         * Helper function for an immediate transmission through an available message buffer
-         *
-         * @param [in]  TX_MB_index  The index from an already polled available message buffer.
-         * @param [in]  frame        The individual frame being transmitted.
-         * @return libuavcan::Result:Success after a successful transmission request.
-         */
-        Result messageBuffer_Transmit(std::uint8_t TX_MB_index, const FrameType& frame) const
-        {
-            /* Get data length of the frame wanted to be transmitted */
-            std::uint_fast8_t payloadLength = frame.getDataLength();
-
-            /* Get the frame's dlc */
-            const std::uint32_t dlc =
-                static_cast<std::underlying_type<libuavcan::media::CAN::FrameDLC>::type>(frame.getDLC());
-
-            /* Casting from uint8 to native uint32 for faster payload transfer to transmission message buffer */
-            std::uint32_t* native_FrameData = reinterpret_cast<std::uint32_t*>(const_cast<std::uint8_t*>(frame.data));
-
-            /* Fill up the payload's bytes, including the ones that don't add up to a full word e.g. 1,2,3,5,6,7 byte
-             * data length payloads */
-            for (std::uint8_t i = 0;
-                 i < (payloadLength >> 2) + std::min(1, (static_cast<std::uint8_t>(payloadLength) & 0x3));
-                 i++)
-            {
-                /* FlexCAN natively transmits the bytes in big-endian order, in order to transmit little-endian for
-                 * UAVCAN, a byte swap is required */
-                REV_BYTES_32(native_FrameData[i],
-                             FlexCAN[iface_index]->RAMn[TX_MB_index * MB_Size_Words + MB_Data_Offset + i]);
-            }
-
-            /* Fill up frame ID */
-            FlexCAN[index_]->RAMn[TX_MB_index * MB_Size_Words + 1] = frame.id & CAN_WMBn_ID_ID_MASK;
-
-            /* Fill up word 0 of frame and transmit it
-             * Extended Data Length       (EDL) = 1
-             * Bit Rate Switch            (BRS) = 1
-             * Error State Indicator      (ESI) = 0
-             * Message Buffer Code       (CODE) = 12 ( Transmit data frame )
-             * Substitute Remote Request  (SRR) = 0
-             * ID Extended Bit            (IDE) = 1
-             * Remote Tx Request          (RTR) = 0
-             * Data Length Code           (DLC) = frame's dlc
-             * Counter Time Stamp  (TIME STAMP) = 0 ( Handled by hardware )
-             */
-            FlexCAN[index_]->RAMn[TX_MB_index * MB_Size_Words] =
-                CAN_RAMn_DATA_BYTE_1(dlc) | CAN_WMBn_CS_DLC(dlc) | CAN_RAMn_DATA_BYTE_0(0xCC);
-
-            /* After a successful transmission the interrupt flag of the corresponding message buffer is set, poll with
-             * timeout for it */
-            Result Status = flagPollTimeout_Set(FlexCAN[index_]->IFLAG1, 1u << TX_MB_index);
-
-            /* Clear the flag previously polled (W1C register) */
-            FlexCAN[index_]->IFLAG1 |= 1u << TX_MB_index;
-
-            /* Return successful transmission request status */
-            return Status;
-        }
-
-        unsigned index_;
-
-        /* Intermediate array for harvesting the received frame's payload in the ISR */
-        volatile std::uint32_t data_ISR_word_[InterfaceGroup::FrameType::MTUBytes / 4u];
-
-        /* Counter for the number of discarded messages due to the RX FIFO being full */
-        volatile std::uint32_t discarded_frames_count_;
-
-        /* Frame's reception FIFO as a dequeue with libuavcan's static memory pool, one for each available interface */
-        std::deque<InterfaceGroup::FrameType,
-                   platform::memory::PoolAllocator<Frame_Capacity, sizeof(InterfaceGroup::FrameType)>>
-            frame_ISRbuffer_;
-    };
-
-    // +--------------------------------------------------------------------------+
-    // | S32KInterfaceGroupImpl
-    // +--------------------------------------------------------------------------+
-
-    /**
-     * Concrete type held internally and returned to the system via
-     * libuavcan::media::S32K::InterfaceManager::startInterfaceGroup
-     */
-    template <std::size_t InterfaceCount>
-    class S32KInterfaceGroupImpl : public InterfaceGroup
+    Result read(InterfaceGroup::FrameType (&out_frames)[InterfaceGroup::RxFramesLen], std::size_t& out_frames_read)
     {
-    public:
-        S32KInterfaceGroupImpl(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
-                               std::size_t filter_config_length)
+        /* Initialize return value and out_frames_read output reference value */
+        Result status   = Result::SuccessNothing;
+        out_frames_read = 0;
+
+        /* Check if the ISR buffer isn't empty */
+        if (!frame_ISRbuffer_.empty())
         {
-            /* CAN frames timestamping 64-bit timer initialization using chained LPIT channel 0 and 1 */
+            // TODO handle where RxFramesLen > 1
 
-            /* Clock source option 6: (SPLLDIV2) at 80Mhz */
-            PCC->PCCn[PCC_LPIT_INDEX] |= PCC_PCCn_PCS(6);
-            PCC->PCCn[PCC_LPIT_INDEX] |= PCC_PCCn_CGC(1); /* Clock gating to LPIT module */
+            /* Get the front element of the queue buffer */
+            out_frames[0] = frame_ISRbuffer_.front();
 
-            /* Enable module */
-            LPIT0->MCR |= LPIT_MCR_M_CEN(1);
+            /* Pop the front element of the queue buffer */
+            frame_ISRbuffer_.pop_front();
 
-            /* Select 32-bit periodic Timer for both chained channels and timeouts timer (default)  */
-            LPIT0->TMR[0].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
-            LPIT0->TMR[1].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
-            LPIT0->TMR[2].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
+            /* Default RX number of frames read at once by this implementation is 1 */
+            out_frames_read = InterfaceGroup::RxFramesLen;
 
-            /* Select chain mode for channel 1, this becomes the most significant 32 bits */
-            LPIT0->TMR[1].TCTRL |= LPIT_TMR_TCTRL_CHAIN(1);
+            /* If read is successful, status is success */
+            status = Result::Success;
+        }
 
-            /* Setup max reload value for both channels 0xFFFFFFFF */
-            LPIT0->TMR[0].TVAL = LPIT_TMR_TVAL_TMR_VAL_MASK;
-            LPIT0->TMR[1].TVAL = LPIT_TMR_TVAL_TMR_VAL_MASK;
+        /* Return status code */
+        return status;
+    }
 
-            /* Start the timers */
-            LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_0(1) | LPIT_SETTEN_SET_T_EN_1(1);
+    Result write(const InterfaceGroup::FrameType (&frames)[InterfaceGroup::TxFramesLen],
+                 std::size_t  frames_len,
+                 std::size_t& out_frames_written)
+    {
+        /* Initialize return value status */
+        Result Status = Result::BufferFull;
 
-            /* Verify that the least significant 32-bit timer is counting (not locked at 0xFFFFFFFF) */
-            while (LPIT0->TMR[0].CVAL == LPIT_TMR_CVAL_TMR_CUR_VAL_MASK)
-            {
-            };
+        /* Input validation */
+        if (frames_len > InterfaceGroup::TxFramesLen)
+        {
+            Status = Result::BadArgument;
+        }
 
-            /* FlexCAN instances initialization */
-            for (std::size_t i = 0; i < InterfaceCount; ++i)
-            {
-                new (&peripheral_storage_[i]) S32KFlexCan(i, filter_config, filter_config_length);
-            }
+        /* Poll the Inactive Message Buffer and Valid Priority Status flags before checking for free MB's */
+        if ((FlexCAN[index_]->ESR2 & CAN_ESR2_IMB_MASK) && (FlexCAN[index_]->ESR2 & CAN_ESR2_VPS_MASK))
+        {
+            /* Look for the lowest number free MB */
+            std::uint8_t mb_index = (FlexCAN[index_]->ESR2 & CAN_ESR2_LPTM_MASK) >> CAN_ESR2_LPTM_SHIFT;
 
-            /* Clock gating and multiplexing for the pins used */
-            PCC->PCCn[PCC_PORTE_INDEX] |= PCC_PCCn_CGC_MASK; /* Clock gating to PORT E */
-            PORTE->PCR[4] |= PORT_PCR_MUX(5);                /* CAN0_RX at PORT E pin 4 */
-            PORTE->PCR[5] |= PORT_PCR_MUX(5);                /* CAN0_TX at PORT E pin 5 */
+            /* Proceed with the tranmission */
+            Status = messageBuffer_Transmit(mb_index, frames[0]);
+
+            /* Argument assignment to 1 Frame transmitted successfully */
+            out_frames_written = isSuccess(Status) ? InterfaceGroup::TxFramesLen : 0;
+        }
+
+        /* Return status code */
+        return Status;
+    }
+
+    std::uint32_t get_rx_overflows() const
+    {
+        return discarded_frames_count_;
+    }
+
+private:
+    /*
+     * Helper function for resolving the timestamp of a received frame from FlexCAN'S 16-bit overflowing timer.
+     * Based on Pyuavcan's SourceTimeResolver class from which the terms source and target are used. Note: A maximum
+     * of 820 microseconds is allowed for the reception ISR to reach this function starting from a successful frame
+     * reception. The computation relies in that no more than a full period from the 16-bit timestamping timer
+     * running at 80Mhz have passed, this could occur in deadlocks or priority inversion scenarios since 820 uSecs
+     * constitute a significant amount of cycles, if this happens, timestamps would stop being monotonic. param
+     * frame_timestamp Source clock read from the FlexCAN's peripheral timer. param  instance        The interface
+     * instance number used by the ISR return time::Monotonic 64-bit timestamp resolved from 16-bit Flexcan's timer
+     * samples.
+     */
+    time::Monotonic resolve_Timestamp(std::uint64_t frame_timestamp)
+    {
+        /* Harvest the peripheral's current timestamp, this is the 16-bit overflowing source clock */
+        std::uint64_t FlexCAN_timestamp = FlexCAN[index_]->TIMER;
+
+        /* Get an non-overflowing 64-bit timestamp, this is the target clock source */
+        std::uint64_t target_source = static_cast<std::uint64_t>(
+            (static_cast<std::uint64_t>(0xFFFFFFFF - LPIT0->TMR[1].CVAL) << 32) | (0xFFFFFFFF - LPIT0->TMR[0].CVAL));
+
+        /* Compute the delta of time that occurred in the source clock */
+        std::uint64_t source_delta = FlexCAN_timestamp > frame_timestamp ? FlexCAN_timestamp - frame_timestamp
+                                                                         : frame_timestamp - FlexCAN_timestamp;
+
+        /* Resolve the received frame's absolute timestamp and divide by 80 due the 80Mhz clock source
+         * of both the source and target timers for converting them into the desired microseconds resolution */
+        std::uint64_t resolved_timestamp_ISR = (target_source - source_delta) / 80;
+
+        /* Instantiate the required Monotonic object from the resolved timestamp */
+        return time::Monotonic::fromMicrosecond(resolved_timestamp_ISR);
+    }
+
+    /** @fn
+     * Helper function for an immediate transmission through an available message buffer
+     *
+     * @param [in]  TX_MB_index  The index from an already polled available message buffer.
+     * @param [in]  frame        The individual frame being transmitted.
+     * @return libuavcan::Result:Success after a successful transmission request.
+     */
+    Result messageBuffer_Transmit(std::uint8_t TX_MB_index, const InterfaceGroup::FrameType& frame) const
+    {
+        /* Get data length of the frame wanted to be transmitted */
+        std::uint_fast8_t payloadLength = frame.getDataLength();
+
+        /* Get the frame's dlc */
+        const std::uint32_t dlc =
+            static_cast<std::underlying_type<libuavcan::media::CAN::FrameDLC>::type>(frame.getDLC());
+
+        /* Casting from uint8 to native uint32 for faster payload transfer to transmission message buffer */
+        std::uint32_t* native_FrameData = reinterpret_cast<std::uint32_t*>(const_cast<std::uint8_t*>(frame.data));
+
+        /* Fill up the payload's bytes, including the ones that don't add up to a full word e.g. 1,2,3,5,6,7 byte
+         * data length payloads */
+        for (std::uint8_t i = 0;
+             i < (payloadLength >> 2) + std::min(1, (static_cast<std::uint8_t>(payloadLength) & 0x3));
+             i++)
+        {
+            /* FlexCAN natively transmits the bytes in big-endian order, in order to transmit little-endian for
+             * UAVCAN, a byte swap is required */
+            REV_BYTES_32(native_FrameData[i],
+                         FlexCAN[index_]->RAMn[TX_MB_index * MB_Size_Words + MB_Data_Offset + i]);
+        }
+
+        /* Fill up frame ID */
+        FlexCAN[index_]->RAMn[TX_MB_index * MB_Size_Words + 1] = frame.id & CAN_WMBn_ID_ID_MASK;
+
+        /* Fill up word 0 of frame and transmit it
+         * Extended Data Length       (EDL) = 1
+         * Bit Rate Switch            (BRS) = 1
+         * Error State Indicator      (ESI) = 0
+         * Message Buffer Code       (CODE) = 12 ( Transmit data frame )
+         * Substitute Remote Request  (SRR) = 0
+         * ID Extended Bit            (IDE) = 1
+         * Remote Tx Request          (RTR) = 0
+         * Data Length Code           (DLC) = frame's dlc
+         * Counter Time Stamp  (TIME STAMP) = 0 ( Handled by hardware )
+         */
+        FlexCAN[index_]->RAMn[TX_MB_index * MB_Size_Words] =
+            CAN_RAMn_DATA_BYTE_1(dlc) | CAN_WMBn_CS_DLC(dlc) | CAN_RAMn_DATA_BYTE_0(0xCC);
+
+        /* After a successful transmission the interrupt flag of the corresponding message buffer is set, poll with
+         * timeout for it */
+        Result Status = flagPollTimeout_Set(FlexCAN[index_]->IFLAG1, 1u << TX_MB_index);
+
+        /* Clear the flag previously polled (W1C register) */
+        FlexCAN[index_]->IFLAG1 |= 1u << TX_MB_index;
+
+        /* Return successful transmission request status */
+        return Status;
+    }
+
+    unsigned index_;
+
+    /* Intermediate array for harvesting the received frame's payload in the ISR */
+    volatile std::uint32_t data_ISR_word_[InterfaceGroup::FrameType::MTUBytes / 4u];
+
+    /* Counter for the number of discarded messages due to the RX FIFO being full */
+    volatile std::uint32_t discarded_frames_count_;
+
+    /* Frame's reception FIFO as a dequeue with libuavcan's static memory pool, one for each available interface */
+    std::deque<InterfaceGroup::FrameType,
+               platform::memory::PoolAllocator<Frame_Capacity, sizeof(InterfaceGroup::FrameType)>>
+        frame_ISRbuffer_;
+};
+
+// +--------------------------------------------------------------------------+
+// | S32KInterfaceGroupImpl
+// +--------------------------------------------------------------------------+
+
+/**
+ * Concrete type held internally and returned to the system via
+ * libuavcan::media::S32K::InterfaceManager::startInterfaceGroup
+ */
+template <std::size_t InterfaceCount>
+class S32KInterfaceGroupImpl : public InterfaceGroup
+{
+public:
+    static_assert(InterfaceCount > 0, "Must have at least one CAN interface to define this type.");
+
+    S32KInterfaceGroupImpl(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
+                           std::size_t                                                             filter_config_length)
+    {
+        /* CAN frames timestamping 64-bit timer initialization using chained LPIT channel 0 and 1 */
+
+        /* Clock source option 6: (SPLLDIV2) at 80Mhz */
+        PCC->PCCn[PCC_LPIT_INDEX] |= PCC_PCCn_PCS(6);
+        PCC->PCCn[PCC_LPIT_INDEX] |= PCC_PCCn_CGC(1); /* Clock gating to LPIT module */
+
+        /* Enable module */
+        LPIT0->MCR |= LPIT_MCR_M_CEN(1);
+
+        /* Select 32-bit periodic Timer for both chained channels and timeouts timer (default)  */
+        LPIT0->TMR[0].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
+        LPIT0->TMR[1].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
+        LPIT0->TMR[2].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
+
+        /* Select chain mode for channel 1, this becomes the most significant 32 bits */
+        LPIT0->TMR[1].TCTRL |= LPIT_TMR_TCTRL_CHAIN(1);
+
+        /* Setup max reload value for both channels 0xFFFFFFFF */
+        LPIT0->TMR[0].TVAL = LPIT_TMR_TVAL_TMR_VAL_MASK;
+        LPIT0->TMR[1].TVAL = LPIT_TMR_TVAL_TMR_VAL_MASK;
+
+        /* Start the timers */
+        LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_0(1) | LPIT_SETTEN_SET_T_EN_1(1);
+
+        /* Verify that the least significant 32-bit timer is counting (not locked at 0xFFFFFFFF) */
+        while (LPIT0->TMR[0].CVAL == LPIT_TMR_CVAL_TMR_CUR_VAL_MASK)
+        {
+        };
+
+        /* FlexCAN instances initialization */
+        for (std::size_t i = 0; i < InterfaceCount; ++i)
+        {
+            new (&peripheral_storage_[i]) S32KFlexCan(i, filter_config, filter_config_length);
+        }
+
+        /* Clock gating and multiplexing for the pins used */
+        PCC->PCCn[PCC_PORTE_INDEX] |= PCC_PCCn_CGC_MASK; /* Clock gating to PORT E */
+        PORTE->PCR[4] |= PORT_PCR_MUX(5);                /* CAN0_RX at PORT E pin 4 */
+        PORTE->PCR[5] |= PORT_PCR_MUX(5);                /* CAN0_TX at PORT E pin 5 */
 
 #if defined(MCU_S32K146) || defined(MCU_S32K148)
 
-            PCC->PCCn[PCC_PORTA_INDEX] |= PCC_PCCn_CGC_MASK; /* Clock gating to PORT A */
-            PORTA->PCR[12] |= PORT_PCR_MUX(3);               /* CAN1_RX at PORT A pin 12 */
-            PORTA->PCR[13] |= PORT_PCR_MUX(3);               /* CAN1_TX at PORT A pin 13 */
+        PCC->PCCn[PCC_PORTA_INDEX] |= PCC_PCCn_CGC_MASK; /* Clock gating to PORT A */
+        PORTA->PCR[12] |= PORT_PCR_MUX(3);               /* CAN1_RX at PORT A pin 12 */
+        PORTA->PCR[13] |= PORT_PCR_MUX(3);               /* CAN1_TX at PORT A pin 13 */
 
-            /* Set to LOW the standby (STB) pin in both transceivers of the UCANS32K146 node board */
-            if (UAVCAN_NODE_BOARD_USED)
-            {
-                PORTE->PCR[11] |= PORT_PCR_MUX(1); /* MUX to GPIO */
-                PTE->PDDR |= 1 << 11;              /* Set direction as output */
-                PTE->PCOR |= 1 << 11;              /* Set the pin LOW */
+        /* Set to LOW the standby (STB) pin in both transceivers of the UCANS32K146 node board */
+        if (UAVCAN_NODE_BOARD_USED)
+        {
+            PORTE->PCR[11] |= PORT_PCR_MUX(1); /* MUX to GPIO */
+            PTE->PDDR |= 1 << 11;              /* Set direction as output */
+            PTE->PCOR |= 1 << 11;              /* Set the pin LOW */
 
-                PORTE->PCR[10] |= PORT_PCR_MUX(1); /* Same as above */
-                PTE->PDDR |= 1 << 10;
-                PTE->PCOR |= 1 << 10;
-            }
+            PORTE->PCR[10] |= PORT_PCR_MUX(1); /* Same as above */
+            PTE->PDDR |= 1 << 10;
+            PTE->PCOR |= 1 << 10;
+        }
 
 #endif
 
 #if defined(MCU_S32K148)
-            PCC->PCCn[PCC_PORTB_INDEX] |= PCC_PCCn_CGC_MASK; /* Clock gating to PORT B */
-            PORTB->PCR[12] |= PORT_PCR_MUX(4);               /* CAN2_RX at PORT B pin 12 */
-            PORTB->PCR[13] |= PORT_PCR_MUX(4);               /* CAN2_TX at PORT B pin 13 */
+        PCC->PCCn[PCC_PORTB_INDEX] |= PCC_PCCn_CGC_MASK; /* Clock gating to PORT B */
+        PORTB->PCR[12] |= PORT_PCR_MUX(4);               /* CAN2_RX at PORT B pin 12 */
+        PORTB->PCR[13] |= PORT_PCR_MUX(4);               /* CAN2_TX at PORT B pin 13 */
 #endif
+    }
+
+    virtual ~S32KInterfaceGroupImpl()
+    {
+        /* FlexCAN module deinitialization */
+        for (std::size_t i = 0; i < InterfaceCount; ++i)
+        {
+            reinterpret_cast<S32KFlexCan*>(&peripheral_storage_[i])->~S32KFlexCan();
         }
 
-        virtual ~S32KInterfaceGroupImpl()
+        /* Reset LPIT timer peripheral, (resets all except the MCR register) */
+        LPIT0->MCR |= LPIT_MCR_SW_RST(1);
+
+        /* Verify that the timer did reset (locked at 0xFFFFFFFF) */
+        while (LPIT0->TMR[0].CVAL != LPIT_TMR_CVAL_TMR_CUR_VAL_MASK)
         {
-            /* FlexCAN module deinitialization */
+        }
+        /* Clear the reset bit since it isn't cleared automatically */
+        LPIT0->MCR &= ~LPIT_MCR_SW_RST_MASK;
+
+        /* Disable the clock to the LPIT's timers */
+        LPIT0->MCR &= ~LPIT_MCR_M_CEN_MASK;
+
+        /* Disable LPIT clock gating */
+        PCC->PCCn[PCC_LPIT_INDEX] &= ~PCC_PCCn_CGC_MASK;
+    }
+
+    virtual std::uint_fast8_t getInterfaceCount() const override
+    {
+        return CANFD_Count;
+    }
+
+    virtual Result write(std::uint_fast8_t interface_index,
+                         const FrameType (&frames)[TxFramesLen],
+                         std::size_t  frames_len,
+                         std::size_t& out_frames_written) override
+    {
+        /* Input validation */
+        if (interface_index > InterfaceCount)
+        {
+            return Result::BadArgument;
+        }
+        else
+        {
+            return get_interface(interface_index - 1).write(frames, frames_len, out_frames_written);
+        }
+    }
+
+    virtual Result read(std::uint_fast8_t interface_index,
+                        FrameType (&out_frames)[RxFramesLen],
+                        std::size_t& out_frames_read) override
+    {
+        out_frames_read = 0;
+
+        /* Input validation */
+        if (interface_index > InterfaceCount)
+        {
+            return Result::BadArgument;
+        }
+        else
+        {
+            return get_interface(interface_index - 1).read(out_frames, out_frames_read);
+        }
+    }
+
+    virtual Result reconfigureFilters(const typename FrameType::Filter* filter_config,
+                                      std::size_t                       filter_config_length) override
+    {
+        Result result = Result::Success;
+
+        for (std::size_t i = 0; i < InterfaceCount; ++i)
+        {
+            result = get_interface(i).reconfigureFilters(filter_config, filter_config_length);
+            if (isFailure(result))
+            {
+                return result;
+            }
+        }
+        return result;
+    }
+
+    virtual Result select(duration::Monotonic timeout, bool ignore_write_available) override
+    {
+        /* Obtain timeout from object */
+        std::uint32_t cycles_timeout = static_cast<std::uint32_t>(timeout.toMicrosecond());
+
+        /* Initialization of delta variable for comparison */
+        volatile std::uint32_t delta = 0;
+
+        /* Disable LPIT channel 3 for loading */
+        LPIT0->CLRTEN |= LPIT_CLRTEN_CLR_T_EN_3(1);
+
+        /* Load LPIT with its maximum value */
+        LPIT0->TMR[3].TVAL = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK;
+
+        /* Enable LPIT channel 3 for timeout start */
+        LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_3(1);
+
+        /* Start of timed block */
+        while (delta < cycles_timeout)
+        {
+            /* Poll in each of the available interfaces */
             for (std::size_t i = 0; i < InterfaceCount; ++i)
             {
-                reinterpret_cast<S32KFlexCan*>(&peripheral_storage_[i])->~S32KFlexCan();
-            }
-
-            /* Reset LPIT timer peripheral, (resets all except the MCR register) */
-            LPIT0->MCR |= LPIT_MCR_SW_RST(1);
-
-            /* Verify that the timer did reset (locked at 0xFFFFFFFF) */
-            while (LPIT0->TMR[0].CVAL != LPIT_TMR_CVAL_TMR_CUR_VAL_MASK)
-            {
-            }
-            /* Clear the reset bit since it isn't cleared automatically */
-            LPIT0->MCR &= ~LPIT_MCR_SW_RST_MASK;
-
-            /* Disable the clock to the LPIT's timers */
-            LPIT0->MCR &= ~LPIT_MCR_M_CEN_MASK;
-
-            /* Disable LPIT clock gating */
-            PCC->PCCn[PCC_LPIT_INDEX] &= ~PCC_PCCn_CGC_MASK;
-        }
-
-        virtual std::uint_fast8_t getInterfaceCount() const override
-        {
-            return CANFD_Count;
-        }
-
-        virtual Result write(std::uint_fast8_t interface_index,
-                             const FrameType (&frames)[TxFramesLen],
-                             std::size_t  frames_len,
-                             std::size_t& out_frames_written) override
-        {
-            /* Input validation */
-            if (interface_index > InterfaceCount)
-            {
-                return Result::BadArgument;
-            }
-            else
-            {
-                return get_interface(interface_index - 1).write(frames, frames_len, out_frames_written);
-            }
-        }
-
-        virtual Result read(std::uint_fast8_t interface_index,
-                            FrameType (&out_frames)[RxFramesLen],
-                            std::size_t& out_frames_read) override
-        {
-            out_frames_read = 0;
-
-            /* Input validation */
-            if (interface_index > InterfaceCount)
-            {
-                return Result::BadArgument;
-            }
-            else
-            {
-                return get_interface(interface_index - 1).read(out_frames, out_frames_read);
-            }
-        }
-
-        virtual Result reconfigureFilters(const typename FrameType::Filter* filter_config,
-                                          std::size_t                       filter_config_length) override
-        {
-            for (std::size_t i = 0; i < InterfaceCount; ++i)
-            {
-                result = get_interface(i).reconfigureFilters(filter_config, filter_config_length);
-                if (isFailure(result))
+                /* Poll for available frames in RX FIFO */
+                if (get_interface(i).is_ready(ignore_write_available))
                 {
-                    return result;
+                    return Result::Success;
                 }
             }
+
+            /* Get current value of delta */
+            delta = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK - (LPIT0->TMR[3].CVAL);
         }
 
-        virtual Result select(duration::Monotonic timeout, bool ignore_write_available) override
+        /* If this section is reached, means timeout occurred and return timeout status */
+        return Result::SuccessTimeout;
+    }
+
+    /*
+     * FlexCAN ISR for frame reception, implements a walkaround to the S32K1 FlexCAN's lack of a RX FIFO neither a
+     * DMA triggering mechanism for CAN-FD frames in hardware. Completes in at max 7472 cycles when compiled with
+     * g++ at -O3 param instance The FlexCAN peripheral instance number in which the ISR will be executed, starts at
+     * 0. differing form this library's interface indexes that start at 1.
+     */
+    void isrHandler(std::uint8_t instance)
+    {
+        /* Perform the ISR atomically */
+        DISABLE_INTERRUPTS()
+
+        get_interface(instance).isrHandler();
+
+        /* Enable interrupts back */
+        ENABLE_INTERRUPTS()
+    }
+
+    std::uint32_t get_rx_overflows() const
+    {
+        std::uint32_t discarded_frames_count = 0;
+        for (std::size_t i = 0; i < InterfaceCount; ++i)
         {
-            /* Obtain timeout from object */
-            std::uint32_t cycles_timeout = static_cast<std::uint32_t>(timeout.toMicrosecond());
-
-            /* Initialization of delta variable for comparison */
-            volatile std::uint32_t delta = 0;
-
-            /* Disable LPIT channel 3 for loading */
-            LPIT0->CLRTEN |= LPIT_CLRTEN_CLR_T_EN_3(1);
-
-            /* Load LPIT with its maximum value */
-            LPIT0->TMR[3].TVAL = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK;
-
-            /* Enable LPIT channel 3 for timeout start */
-            LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_3(1);
-
-            /* Start of timed block */
-            while (delta < cycles_timeout)
-            {
-                /* Poll in each of the available interfaces */
-                for (std::size_t i = 0; i < InterfaceCount; ++i)
-                {
-                    /* Poll for available frames in RX FIFO */
-                    if (get_interface(i).is_ready(ignore_write_available))
-                    {
-                        return Result::Success;
-                    }
-                }
-
-                /* Get current value of delta */
-                delta = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK - (LPIT0->TMR[3].CVAL);
-            }
-
-            /* If this section is reached, means timeout occurred and return timeout status */
-            return Result::SuccessTimeout;
+            discarded_frames_count += get_interface(i).get_rx_overflows();
         }
+        return discarded_frames_count;
+    }
 
-        /*
-         * FlexCAN ISR for frame reception, implements a walkaround to the S32K1 FlexCAN's lack of a RX FIFO neither a
-         * DMA triggering mechanism for CAN-FD frames in hardware. Completes in at max 7472 cycles when compiled with
-         * g++ at -O3 param instance The FlexCAN peripheral instance number in which the ISR will be executed, starts at
-         * 0. differing form this library's interface indexes that start at 1.
-         */
-        void isrHandler(std::uint8_t instance)
-        {
-            /* Perform the ISR atomically */
-            DISABLE_INTERRUPTS()
+    S32KFlexCan& get_interface(std::size_t index)
+    {
+        return *reinterpret_cast<S32KFlexCan*>(&peripheral_storage_[index]);
+    }
 
-            get_interface(instance).isrHandler();
+private:
+    typename std::aligned_storage<sizeof(S32KFlexCan), alignof(S32KFlexCan)>::type peripheral_storage_[InterfaceCount];
+};
 
-            /* Enable interrupts back */
-            ENABLE_INTERRUPTS()
-        }
+/* aligned storage allocated statically to store our single InterfaceGroup for this system. */
+std::aligned_storage<sizeof(S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>),
+                     alignof(S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>)>::type _group_storage;
 
-        std::uint32_t get_rx_overflows() const
-        {
-            return discarded_frames_count_;
-        }
-
-        S32KFlexCan& get_interface(std::size_t index)
-        {
-            return *reinterpret_cast<S32KFlexCan*>(&peripheral_storage_[index]);
-        }
-
-    private:
-        typename std::aligned_storage<sizeof(S32KFlexCan), alignof(S32KFlexCan)>::type
-            peripheral_storage_[InterfaceCount];
-    };
-
-    /* aligned storage allocated statically to store our single InterfaceGroup for this system. */
-    std::aligned_storage<sizeof(S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>),
-                         alignof(S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>)>::type _group_storage;
-
-    S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>* _group_singleton = nullptr;
+S32KInterfaceGroupImpl<TARGET_S32K_CANFD_COUNT>* _group_singleton = nullptr;
 
 }  // end anonymous namespace
 
@@ -900,10 +916,9 @@ public:
 // | InterfaceManager
 // +--------------------------------------------------------------------------+
 
-Result
-InterfaceManager::startInterfaceGroup(const typename InterfaceGroupType::FrameType::Filter* filter_config,
-                                      std::size_t                                           filter_config_length,
-                                      InterfaceGroupPtrType&                                out_group)
+Result InterfaceManager::startInterfaceGroup(const typename InterfaceGroupType::FrameType::Filter* filter_config,
+                                             std::size_t                                           filter_config_length,
+                                             InterfaceGroupPtrType&                                out_group)
 {
     /* Initialize return values */
     out_group = nullptr;
@@ -963,9 +978,9 @@ std::size_t InterfaceManager::getMaxFrameFilters() const
     return Filter_Count;
 }
 
-}  // namespace
 }  // namespace S32K
 }  // namespace media
+}  // namespace libuavcan
 
 extern "C"
 {
