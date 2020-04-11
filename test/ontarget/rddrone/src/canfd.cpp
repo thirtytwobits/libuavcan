@@ -530,20 +530,23 @@ private:
         }
 
         /* Fill up frame ID */
-        fc_->RAMn[TX_MB_index * MB_Size_Words + 1] = frame.id;
+        fc_->RAMn[TX_MB_index * MB_Size_Words + 1] = CAN_WMBn_ID_ID(frame.id);
 
         /* Fill up word 0 of frame and transmit it
          * Extended Data Length       (EDL) = 1
          * Bit Rate Switch            (BRS) = 1
          * Error State Indicator      (ESI) = 0
          * Message Buffer Code       (CODE) = 12 ( Transmit data frame )
-         * Substitute Remote Request  (SRR) = 0
+         * Substitute Remote Request  (SRR) = 1 must be 1 for extended frames
          * ID Extended Bit            (IDE) = 1
          * Remote Tx Request          (RTR) = 0
          * Data Length Code           (DLC) = frame's dlc
          * Counter Time Stamp  (TIME STAMP) = 0 ( Handled by hardware )
          */
-        fc_->RAMn[TX_MB_index * MB_Size_Words] = (0xCC6 << 20u) | CAN_WMBn_CS_DLC(dlc);
+        fc_->RAMn[TX_MB_index * MB_Size_Words] = (0xCC << 24u) |
+            CAN_WMBn_CS_SRR(1) |
+            CAN_WMBn_CS_IDE(1) |
+            CAN_WMBn_CS_DLC(dlc);
 
         /* Return successful transmission request status */
         return Result::Success;
