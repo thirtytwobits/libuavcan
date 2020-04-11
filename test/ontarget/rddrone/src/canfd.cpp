@@ -243,7 +243,6 @@ public:
         {
             // TODO: use fixed FIFO buffers that are lockless instead of deque
             // TODO: don't byte-swap in the ISR. Defer this until read.
-            // TODO: See if we can set the timestamp to be ch1 of lpit 1.
 
             /* Harvest the Message buffer, read of the control and status word locks the MB */
 
@@ -531,7 +530,7 @@ private:
         }
 
         /* Fill up frame ID */
-        fc_->RAMn[TX_MB_index * MB_Size_Words + 1] = frame.id & CAN_WMBn_ID_ID_MASK;
+        fc_->RAMn[TX_MB_index * MB_Size_Words + 1] = frame.id;
 
         /* Fill up word 0 of frame and transmit it
          * Extended Data Length       (EDL) = 1
@@ -544,8 +543,7 @@ private:
          * Data Length Code           (DLC) = frame's dlc
          * Counter Time Stamp  (TIME STAMP) = 0 ( Handled by hardware )
          */
-        fc_->RAMn[TX_MB_index * MB_Size_Words] =
-            CAN_RAMn_DATA_BYTE_1(dlc) | CAN_WMBn_CS_DLC(dlc) | CAN_RAMn_DATA_BYTE_0(0xCC);
+        fc_->RAMn[TX_MB_index * MB_Size_Words] = (0xCC6 << 20u) | CAN_WMBn_CS_DLC(dlc);
 
         /* Return successful transmission request status */
         return Result::Success;
@@ -590,7 +588,11 @@ public:
     Result start(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
                  std::size_t                                                             filter_config_length)
     {
-        /* CAN frames timestamping 64-bit timer initialization using chained LPIT channel 0 and 1 */
+        /*
+            CAN frames timestamping 64-bit timer initialization using chained LPIT channel 0 and 1.
+            The lower 16-bits of LPIT 0 are used as the external time trigger for CAN0. CAN1 and CAN2
+            use a free-running timer.
+        */
 
         /* Clock source option 6: (SPLLDIV2) at 80Mhz */
         PCC->PCCn[PCC_LPIT_INDEX] |= PCC_PCCn_PCS(6);
@@ -599,6 +601,7 @@ public:
         /* Enable module */
         LPIT0->MCR |= LPIT_MCR_M_CEN(1);
 
+        // TODO: verify the tick rate of this timer.
         /* Select 32-bit periodic Timer for both chained channels and timeouts timer (default)  */
         LPIT0->TMR[0].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
         LPIT0->TMR[1].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
@@ -747,6 +750,8 @@ public:
         /* Initialization of delta variable for comparison */
         volatile std::uint32_t delta = 0;
 
+        // TODO: just monitor (but don't modify) LPIT channels 0 and 1. There's no need to
+        // use more channels.
         /* Disable LPIT channel 3 for loading */
         LPIT0->CLRTEN |= LPIT_CLRTEN_CLR_T_EN_3(1);
 

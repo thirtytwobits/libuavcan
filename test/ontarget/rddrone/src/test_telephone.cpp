@@ -86,7 +86,7 @@ int main()
 
 #if !defined(LIBUAVCAN_TEST_NODE_ID)
     /* ID for the current UAVCAN node */
-    constexpr std::uint32_t Node_ID = 0xC0C0A;
+    constexpr std::uint32_t Node_ID = 1u;
 
 #else
     /* ID and for the current UAVCAN node */
@@ -94,12 +94,13 @@ int main()
 
 #endif
 
-    constexpr std::uint32_t TestMessageId      = 0xC0FFE;
 
-    constexpr std::uint32_t Node_Mask          = 0xFFFFF; /* All care bits mask for frame filtering */
+    constexpr std::uint32_t Node_Mask          = 0xF0; /* All care bits mask for frame filtering */
+    constexpr std::uint32_t Node_message_shift = 4u;
     constexpr std::size_t   Node_Filters_Count = 1u;      /* Number of ID's that the node will filter in */
     constexpr std::size_t   Node_Frame_Count   = 1u;      /* Frames transmitted each time */
     constexpr std::size_t   First_Instance     = 1u;      /* Interface instance used in this demo */
+    constexpr std::uint32_t TestMessageId      = Node_ID | (Node_Mask & (1 << Node_message_shift));
 
     /* Size of the payload in bytes of the frame to be transmitted */
     constexpr std::uint16_t payload_length = libuavcan::media::S32K::InterfaceGroup::FrameType::MTUBytes;
@@ -133,7 +134,7 @@ int main()
     libuavcan::media::S32K::InterfaceGroup::FrameType bouncing_frame[Node_Frame_Count] = {bouncing_frame_obj};
 
     /* Instantiate the filter object that the current node will apply to receiving frames */
-    libuavcan::media::S32K::InterfaceGroup::FrameType::Filter demo_Filter(Node_ID, Node_Mask);
+    libuavcan::media::S32K::InterfaceGroup::FrameType::Filter demo_Filter(TestMessageId, Node_Mask);
 
     std::uint32_t rx_msg_count = 0;
 
