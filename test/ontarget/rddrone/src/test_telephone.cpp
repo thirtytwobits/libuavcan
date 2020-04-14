@@ -44,27 +44,6 @@ extern "C"
 
 }  // extern "C"
 
-/* Function that takes the payload and adds 1 */
-void payload_bounceADD(std::uint8_t* rx_payload)
-{
-    std::uint64_t payloadLSB = static_cast<std::uint64_t>((rx_payload[56] << 24) | (rx_payload[57] << 16) |
-                                                          (rx_payload[58] << 8) | (rx_payload[59] << 0));
-
-    std::uint64_t payloadMSB = static_cast<std::uint64_t>((rx_payload[60] << 24) | (rx_payload[61] << 16) |
-                                                          (rx_payload[62] << 8) | (rx_payload[63] << 0));
-
-    std::uint64_t fullNumber = (std::uint64_t)((std::uint64_t)(payloadLSB << 32) | payloadMSB);
-
-    /* Add 1 and apply modulo to keep it 64-bit number (AND with 64-bit mask) */
-    fullNumber = (std::uint64_t)((std::uint64_t)(fullNumber + 1) & 0xFFFFFFFFFFFFFFFF);
-
-    /* Fill-up the payload with the previous number */
-    for (std::uint8_t i = 0; i < 8; i++)
-    {
-        rx_payload[63 - i] = (std::uint64_t)((std::uint64_t)(fullNumber & (std::uint64_t)(0xFF << (8 * i))) >> (8 * i));
-    }
-}
-
 void greenLED_init(void)
 {
     PCC->PCCn[PCC_PORTD_INDEX] |= PCC_PCCn_CGC_MASK; /* Enable clock for PORTD */
@@ -94,12 +73,11 @@ int main()
 
 #endif
 
-
     constexpr std::uint32_t Node_Mask          = 0xF0; /* All care bits mask for frame filtering */
     constexpr std::uint32_t Node_message_shift = 4u;
-    constexpr std::size_t   Node_Filters_Count = 1u;      /* Number of ID's that the node will filter in */
-    constexpr std::size_t   Node_Frame_Count   = 1u;      /* Frames transmitted each time */
-    constexpr std::size_t   First_Instance     = 1u;      /* Interface instance used in this demo */
+    constexpr std::size_t   Node_Filters_Count = 1u; /* Number of ID's that the node will filter in */
+    constexpr std::size_t   Node_Frame_Count   = 1u; /* Frames transmitted each time */
+    constexpr std::size_t   First_Instance     = 1u; /* Interface instance used in this demo */
     constexpr std::uint32_t TestMessageId      = Node_ID | (Node_Mask & (1 << Node_message_shift));
 
     /* Size of the payload in bytes of the frame to be transmitted */
@@ -111,13 +89,24 @@ int main()
         libuavcan::media::S32K::InterfaceGroup::FrameType::lengthToDlc(payload_length);
 
     /* 64-byte payload that will be exchanged between the nodes */
-    std::uint32_t demo_payload[payload_length / 4];
+    std::uint32_t demo_payload[] = {0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD,
+                                    0xAABBCCDD};
 
-    std::fill(demo_payload, demo_payload + (payload_length / 4), 0);
-    std::uint32_t* a = &demo_payload[56];
-    std::uint32_t* b = &demo_payload[60];
-    *a               = (4 << 24) | (3 << 16) | (2 << 8) | 1;
-    *b               = (8 << 24) | (7 << 16) | (6 << 8) | 5;
+    static_assert(sizeof(demo_payload) == 16 * 4, "demo_payload is supposed to be 64-bytes.");
 
     /* Instantiate factory object */
     libuavcan::media::S32K::InterfaceManager demo_Manager;
@@ -179,7 +168,7 @@ int main()
             /* Changed frame's ID for returning it back */
             bouncing_frame[0].id = TestMessageId;
 
-            payload_bounceADD(bouncing_frame[0].data);
+            bouncing_frame[0].data[63] += 1;
 
             if (libuavcan::isSuccess(status))
             {

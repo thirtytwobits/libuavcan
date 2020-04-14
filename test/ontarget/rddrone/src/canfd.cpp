@@ -584,7 +584,7 @@ private:
             byte_it += 4;
         }
 
-        std::fill(&inout_tx_buffer.data.words[MessageBuffer::MTUWords - word_count], &inout_tx_buffer.data.words[MessageBuffer::MTUWords], 0u);
+        std::fill(&inout_tx_buffer.data.words[word_count], &inout_tx_buffer.data.words[MessageBuffer::MTUWords], 0u);
 
         inout_tx_buffer.byte1.fields.id_extended = frame.id;
 
