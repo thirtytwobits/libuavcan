@@ -21,7 +21,6 @@
 #if defined(__GNUC__)
 #    pragma GCC diagnostic push
 #    pragma GCC diagnostic ignored "-Wold-style-cast"
-#    pragma GCC diagnostic ignored "-Wcast-align"
 #endif
 
 /* S32K driver header file */
@@ -60,6 +59,10 @@
 #    error "No NXP S32K compatible MCU header file included"
 #endif
 
+#if !defined LIBUAVCAN_S32K_RX_FIFO_LENGTH
+#    define LIBUAVCAN_S32K_RX_FIFO_LENGTH 4
+#endif
+
 // +--------------------------------------------------------------------------+
 // | PRIVATE IMPLEMENTATION AND STATIC STORAGE
 // +--------------------------------------------------------------------------+
@@ -72,11 +75,10 @@ namespace S32K
 {
 namespace
 {
-/* Tunable frame capacity for the ISR reception FIFO, each frame adds 80 bytes of required .bss memory */
-constexpr static std::size_t Frame_Capacity = 40u;
-
 /* Number of filters supported by a single FlexCAN instance */
 constexpr static unsigned int Filter_Count = 5u;
+
+constexpr static std::size_t MailboxCount = 7u;
 
 /* Lookup table for NVIC IRQ numbers for each FlexCAN instance */
 constexpr static std::uint32_t FlexCAN_NVIC_Indices[][2u] = {{2u, 0x20000}, {2u, 0x1000000}, {2u, 0x80000000}};
@@ -87,25 +89,124 @@ constexpr static CAN_Type* FlexCAN[] = CAN_BASE_PTRS;
 /* Lookup table for FlexCAN indices in PCC register */
 constexpr static unsigned int PCC_FlexCAN_Index[] = {36u, 37u, 43u};
 
-/* Size in words (4 bytes) of the offset between the location of message buffers in FlexCAN's dedicated RAM */
-constexpr static unsigned int MB_Size_Words = 18u;
-
-/* Offset in words for reaching the payload of a message buffer */
-constexpr static unsigned int MB_Data_Offset = 2u;
-
-/*
- * Enumeration for converting from a bit number to an index, used for some registers where a bit flag for a nth
- * message buffer is represented as a bit left shifted nth times. e.g. 2nd MB is 0b100 = 4 = (1 << 2)
- */
-enum MB_bit_to_index : unsigned int
+struct alignas(std::uint32_t) MessageBufferByte0 final
 {
-    MessageBuffer0 = 0x1,  /* Number representing the bit for the zeroth MB (1 << 2) */
-    MessageBuffer1 = 0x2,  /* Number for the bit of the first  MB (1 << 3) */
-    MessageBuffer2 = 0x4,  /* Number for the bit of the second MB (1 << 2) */
-    MessageBuffer3 = 0x8,  /* Number for the bit of the third  MB (1 << 3) */
-    MessageBuffer4 = 0x10, /* Number for the bit of the fourth MB (1 << 4) */
-    MessageBuffer5 = 0x20, /* Number for the bit of the fifth  MB (1 << 5) */
-    MessageBuffer6 = 0x40, /* Number for the bit of the sixth  MB (1 << 6) */
+    std::uint16_t timestamp : 16;
+    std::uint8_t  dlc : 4;
+    std::uint8_t  rtr : 1;
+    std::uint8_t  ide : 1;
+    std::uint8_t  srr : 1;
+    std::uint8_t  reserved0 : 1;
+    std::uint8_t  mb_code : 4;
+    std::uint8_t  reserved1 : 1;
+    std::uint8_t  esi : 1;
+    std::uint8_t  brs : 1;
+    std::uint8_t  edl : 1;
+};
+
+static_assert(sizeof(MessageBufferByte0) == 4, "MessageBufferByte0 bitfield must add up to 32 bits.");
+
+struct alignas(std::uint32_t) MessageBufferByte1 final
+{
+    std::uint32_t id_extended : 29;
+    std::uint8_t  priority : 3;
+};
+
+static_assert(sizeof(MessageBufferByte1) == 4, "MessageBufferByte1 bitfield must add up to 32 bits.");
+
+struct alignas(std::uint32_t) MessageBuffer final
+{
+    static constexpr std::size_t MTUBytes = InterfaceManager::InterfaceGroupType::FrameType::MTUBytes;
+    static constexpr std::size_t MTUWords = MTUBytes / 4u;
+    static_assert(MTUBytes % 4 == 0,
+                  "InterfaceManager::InterfaceGroupType::FrameType::MTUBytes must be 4-byte aligned.");
+    static_assert(MTUWords > 0, "MTU must be at least 1, 4-byte word.");
+
+    union
+    {
+        MessageBufferByte0 fields;
+        std::uint32_t      reg;
+    } byte0;
+    union
+    {
+        MessageBufferByte1 fields;
+        std::uint32_t      reg;
+    } byte1;
+    union
+    {
+        std::uint32_t words[MTUWords];
+        std::uint8_t  bytes[MTUBytes];
+    } data;
+};
+
+static_assert(sizeof(MessageBuffer) == 4 * 18, "MessageBuffers are 18 32-bit words.");
+
+template <std::size_t CapacityParam>
+class FifoBuffer
+{
+public:
+    static constexpr std::size_t Capacity = CapacityParam;
+
+    FifoBuffer()
+        : write_(0)
+        , read_(0)
+        , length_(0)
+    {}
+
+    ~FifoBuffer() = default;
+
+    FifoBuffer(const FifoBuffer&) = delete;
+    FifoBuffer(FifoBuffer&&)      = delete;
+    FifoBuffer& operator=(const FifoBuffer&) = delete;
+    FifoBuffer& operator=(FifoBuffer&&) = delete;
+
+    /**
+     * Only ISRs and only one ISR-at-a-time can call this method. No other
+     * method can be called on this object from the ISR.
+     *
+     * @return {@code true} if there was room in the FIFO and the item was copied.
+     *         {@code false} if there wasn't room in the FIFO.
+     */
+    bool push_back_from_isr(const volatile MessageBuffer& item)
+    {
+        if (length_ == Capacity)
+        {
+            return false;
+        }
+        MessageBuffer local_buffer = data_[write_];
+        ++write_;
+        if (write_ == Capacity)
+        {
+            write_ = 0;
+        }
+        ++length_;
+        local_buffer.byte0.reg = item.byte0.reg;
+        local_buffer.byte1.reg = item.byte1.reg;
+        std::copy(&item.data.words[0], &item.data.words[MessageBuffer::MTUWords - 1], &local_buffer.data.words[0]);
+        return true;
+    }
+
+    const MessageBuffer& front() const
+    {
+        return data_[read_];
+    }
+
+    void pop_front()
+    {
+        read_ = (read_ == 0) ? Capacity - 1 : read_ - 1;
+        --length_;
+    }
+
+    bool empty() const
+    {
+        return length_ > 0;
+    }
+
+private:
+    std::size_t   write_;
+    std::size_t   read_;
+    std::size_t   length_;
+    MessageBuffer data_[CapacityParam];
 };
 
 // +--------------------------------------------------------------------------+
@@ -114,16 +215,18 @@ enum MB_bit_to_index : unsigned int
 
 /**
  * Per-interface implementation.
+ * @tparam FifoBufferLen    The number of message buffers to allocate in RAM. Used to overcome the lack of
+ *                          FIFO DMA support in the peripheral.
  */
 class S32KFlexCan final
 {
 public:
     S32KFlexCan(unsigned peripheral_index)
         : index_(peripheral_index)
-        , fc_(FlexCAN[index_])
-        , data_ISR_word_{0}
+        , fc_(FlexCAN[peripheral_index])
+        , buffers_(reinterpret_cast<volatile MessageBuffer*>(FlexCAN[peripheral_index]->RAMn))
         , discarded_frames_count_(0)
-        , frame_ISRbuffer_()
+        , fifo_buffer_()
     {}
 
     ~S32KFlexCan() = default;
@@ -145,7 +248,7 @@ public:
         fc_->CTRL1 &= ~CAN_CTRL1_CLKSRC_MASK; /* Clear any previous clock source configuration */
         fc_->CTRL1 |= CAN_CTRL1_CLKSRC_MASK;  /* Select bus clock as source (40Mhz)*/
 
-        enter_freeze_mode();
+        enterFreezeMode();
 
         /* Next configurations are only permitted in freeze mode */
         fc_->MCR |= CAN_MCR_FDEN_MASK |          /* Habilitate CANFD feature */
@@ -181,21 +284,6 @@ public:
                        CAN_FDCTRL_TDCOFF(5) |   /* Setup 5 cycles for data phase sampling delay */
                        CAN_FDCTRL_MBDSR0(3);    /* Setup 64 bytes per message buffer (7 MB's) */
 
-        /* Message buffers are located in a dedicated RAM inside FlexCAN, they aren't affected by reset,
-         * so they must be explicitly initialized, they total 128 slots of 4 words each, which sum
-         * to 512 bytes, each MB is 72 byte in size ( 64 payload and 8 for headers )
-         */
-        for (std::uint8_t j = 0; j < CAN_RAMn_COUNT; j++)
-        {
-            fc_->RAMn[j] = 0;
-        }
-
-        /* Clear the reception masks before configuring the ones needed */
-        for (std::uint8_t j = 0; j < CAN_RXIMR_COUNT; j++)
-        {
-            fc_->RXIMR[j] = 0;
-        }
-
         /* Setup maximum number of message buffers as 7, 0th and 1st for transmission and 2nd-6th for RX */
         fc_->MCR &= ~CAN_MCR_MAXMB_MASK;                     /* Clear previous configuration of MAXMB, default is 0xF */
         fc_->MCR |= CAN_MCR_MAXMB(6) | CAN_MCR_SRXDIS_MASK | /* Disable self-reception of frames if ID matches */
@@ -212,93 +300,34 @@ public:
 
     void isrHandler()
     {
-        /* Initialize variable for finding which MB received */
-        std::uint8_t mb_index = 0;
-
         /* Check which RX MB caused the interrupt (0b1111100) mask for 2nd-6th MB */
-        switch (fc_->IFLAG1 & 124)
+        for (std::size_t mb = 2, i = (1u << 2); mb < MailboxCount; i = (i << 1), ++mb)
         {
-        case MessageBuffer2:
-            mb_index = 2u; /* Case for 2nd MB */
-            break;
-        case MessageBuffer3:
-            mb_index = 3u; /* Case for 3th MB */
-            break;
-        case MessageBuffer4:
-            mb_index = 4u; /* Case for 4th MB */
-            break;
-        case MessageBuffer5:
-            mb_index = 5u; /* Case for 5th MB */
-            break;
-        case MessageBuffer6:
-            mb_index = 6u; /* Case for 6th MB */
-            break;
-        default:
-            // This should never happen.
-            return;
-        }
-
-        /* Receive a frame only if the buffer its under its capacity */
-        if (frame_ISRbuffer_.size() <= Frame_Capacity)
-        {
-            // TODO: use fixed FIFO buffers that are lockless instead of deque
-            // TODO: don't byte-swap in the ISR. Defer this until read.
-
-            /* Harvest the Message buffer, read of the control and status word locks the MB */
-
-            /* Get the raw DLC from the message buffer that received a frame */
-            std::uint32_t dlc_ISR_raw =
-                ((fc_->RAMn[mb_index * MB_Size_Words]) & CAN_WMBn_CS_DLC_MASK) >> CAN_WMBn_CS_DLC_SHIFT;
-
-            /* Create CAN::FrameDLC type variable from the raw dlc */
-            CAN::FrameDLC dlc_ISR = CAN::FrameDLC(dlc_ISR_raw);
-
-            /* Convert from dlc to data length in bytes */
-            std::uint8_t payloadLength_ISR = InterfaceGroup::FrameType::dlcToLength(dlc_ISR);
-
-            /* Get the id */
-            std::uint32_t id_ISR = (fc_->RAMn[mb_index * MB_Size_Words + 1]) & CAN_WMBn_ID_ID_MASK;
-
-            /* Perform the harvesting of the payload, leveraging from native 32-bit transfers and since the FlexCAN
-             * expects the data to be in big-endian order, a byte swap is required from the little-endian
-             * transmission UAVCAN requirement */
-            for (std::uint8_t i = 0;
-                 i < (payloadLength_ISR >> 2) + std::min(1, static_cast<std::uint8_t>(payloadLength_ISR) & 0x3);
-                 i++)
+            if (fc_->IFLAG1 & i)
             {
-                REV_BYTES_32(fc_->RAMn[mb_index * MB_Size_Words + MB_Data_Offset + i], data_ISR_word_[i]);
+                const volatile MessageBuffer& buffer = buffers_[mb];
+
+                /* Instantiate monotonic object form a resolved timestamp */
+                time::Monotonic timestamp_ISR = resolveTimestamp(buffer.byte0.fields.timestamp);
+
+                /* Receive a frame only if the buffer its under its capacity */
+                // TODO: ISR safety
+                if (!fifo_buffer_.push_back_from_isr(buffer))
+                {
+                    /* Increment the number of discarded frames due to full RX FIFO */
+                    discarded_frames_count_++;
+                }
+
+                /* Clear MB interrupt flag (write 1 to clear)*/
+                fc_->IFLAG1 |= i;
             }
-
-            /* Harvest the frame's 16-bit hardware timestamp */
-            std::uint64_t MB_timestamp = fc_->RAMn[mb_index * MB_Size_Words] & 0xFFFF;
-
-            /* Instantiate monotonic object form a resolved timestamp */
-            time::Monotonic timestamp_ISR = resolve_Timestamp(MB_timestamp);
-
-            /* Create Frame object with constructor */
-            CAN::Frame<CAN::TypeFD::MaxFrameSizeBytes> FrameISR(id_ISR,
-                                                                reinterpret_cast<std::uint8_t*>(
-                                                                    const_cast<std::uint32_t*>(data_ISR_word_)),
-                                                                dlc_ISR,
-                                                                timestamp_ISR);
-
-            /* Insert the frame into the queue */
-            frame_ISRbuffer_.push_back(FrameISR);
         }
-        else
-        {
-            /* Increment the number of discarded frames due to full RX dequeue */
-            discarded_frames_count_++;
-        }
-
-        /* Clear MB interrupt flag (write 1 to clear)*/
-        fc_->IFLAG1 |= (1u << mb_index);
     }
 
-    bool is_ready(bool ignore_write_available)
+    bool isReady(bool ignore_write_available)
     {
         /* Poll for available frames in RX FIFO */
-        if (!frame_ISRbuffer_.empty())
+        if (!fifo_buffer_.empty())
         {
             return true;
         }
@@ -324,19 +353,16 @@ public:
             return Result::BadArgument;
         }
 
-        enter_freeze_mode();
+        enterFreezeMode();
 
-        /* Reset all previous filter configurations */
-        for (std::size_t j = 0; j < CAN_RAMn_COUNT; ++j)
-        {
-            fc_->RAMn[j] = 0;
-        }
+        /* Message buffers are located in a dedicated RAM inside FlexCAN, they aren't affected by reset,
+         * so they must be explicitly initialized, they total 128 slots of 4 words each, which sum
+         * to 512 bytes, each MB is 72 byte in size ( 64 payload and 8 for headers )
+         */
+        std::fill(fc_->RAMn, fc_->RAMn + CAN_RAMn_COUNT, 0);
 
         /* Clear the reception masks before configuring the new ones needed */
-        for (std::size_t j = 0; j < CAN_RXIMR_COUNT; ++j)
-        {
-            fc_->RXIMR[j] = 0;
-        }
+        std::fill(fc_->RXIMR, fc_->RXIMR + CAN_RXIMR_COUNT, 0);
 
         for (std::size_t j = 0; j < filter_config_length; ++j)
         {
@@ -354,13 +380,22 @@ public:
              * Data Length Code          (DLC) = 0 ( Valid for transmission only )
              * Counter Time Stamp (TIME STAMP) = 0 ( Handled by hardware )
              */
-            fc_->RAMn[(j + 2) * MB_Size_Words] = CAN_RAMn_DATA_BYTE_0(0xC4) | CAN_RAMn_DATA_BYTE_1(0x20);
+            volatile MessageBuffer& buffer = buffers_[j + 2];
+            buffer.byte0.fields.timestamp  = 0;
+            buffer.byte0.fields.dlc        = 0;
+            buffer.byte0.fields.rtr        = 0;
+            buffer.byte0.fields.ide        = 1;
+            buffer.byte0.fields.srr        = 1;
+            buffer.byte0.fields.mb_code    = 4;
+            buffer.byte0.fields.esi        = 0;
+            buffer.byte0.fields.brs        = 1;
+            buffer.byte0.fields.edl        = 1;
 
             /* Setup Message buffers 2-7 29-bit extended ID from parameter */
-            fc_->RAMn[(j + 2) * MB_Size_Words + 1] = filter_config[j].id;
+            buffer.byte1.fields.id_extended = filter_config[j].id;
         }
 
-        exit_freeze_mode();
+        exitFreezeMode();
 
         return Result::Success;
     }
@@ -372,16 +407,31 @@ public:
         out_frames_read = 0;
 
         /* Check if the ISR buffer isn't empty */
-        if (!frame_ISRbuffer_.empty())
+        if (!fifo_buffer_.empty())
         {
             static_assert(InterfaceGroup::RxFramesLen == 1,
                           "We did not implement reading more than one message at a time.");
 
+            InterfaceGroup::FrameType& out_frame = out_frames[0];
+
             /* Get the front element of the queue buffer */
-            out_frames[0] = frame_ISRbuffer_.front();
+            const MessageBuffer& next_buffer = fifo_buffer_.front();
+
+            const std::uint_fast8_t payload_len =
+                InterfaceGroup::FrameType::dlcToLength(libuavcan::media::CAN::FrameDLC(next_buffer.byte0.fields.dlc));
+            for (std::uint_fast8_t b = 0, w = 0; b < payload_len; b += 4, ++w)
+            {
+                // TODO: when libuavcan issue #309 is fixed use REV_BYTES_32(from, to)
+                // to accelerate this copy.
+                std::uint32_t be_word = next_buffer.data.words[w];
+                out_frame.data[b + 3] = (be_word & 0xFF000000U) >> 24U;
+                out_frame.data[b + 2] = (be_word & 0xFF0000U) >> 16U;
+                out_frame.data[b + 1] = (be_word & 0xFF00U) >> 8U;
+                out_frame.data[b + 0] = (be_word & 0xFFU);
+            }
 
             /* Pop the front element of the queue buffer */
-            frame_ISRbuffer_.pop_front();
+            fifo_buffer_.pop_front();
 
             /* Default RX number of frames read at once by this implementation is 1 */
             out_frames_read = InterfaceGroup::RxFramesLen;
@@ -398,14 +448,14 @@ public:
                  std::size_t  frames_len,
                  std::size_t& out_frames_written)
     {
-        /* Initialize return value status */
-        Result Status = Result::BufferFull;
-
         /* Input validation */
         if (frames_len > InterfaceGroup::TxFramesLen)
         {
-            Status = Result::BadArgument;
+            return Result::BadArgument;
         }
+
+        /* Initialize return value status */
+        Result status = Result::BufferFull;
 
         /* Poll the Inactive Message Buffer and Valid Priority Status flags before checking for free MB's */
         if ((fc_->ESR2 & CAN_ESR2_IMB_MASK) && (fc_->ESR2 & CAN_ESR2_VPS_MASK))
@@ -417,14 +467,14 @@ public:
                           "We did not implement writing more than one message at a time.");
 
             /* Proceed with the tranmission */
-            Status = messageBuffer_Transmit(mb_index, frames[0]);
+            status = messageBufferTransmit(frames[0], buffers_[mb_index]);
 
             /* Argument assignment to 1 Frame transmitted successfully */
-            out_frames_written = isSuccess(Status) ? 1 : 0;
+            out_frames_written = isSuccess(status) ? 1 : 0;
         }
 
         /* Return status code */
-        return Status;
+        return status;
     }
 
     std::uint32_t get_rx_overflows() const
@@ -437,7 +487,7 @@ private:
      * See section 53.1.8.1 of the reference manual.
      * Idempotent helper method for entering freeze mode.
      */
-    void enter_freeze_mode()
+    void enterFreezeMode()
     {
         if (fc_->MCR & CAN_MCR_FRZACK_MASK)
         {
@@ -457,7 +507,7 @@ private:
         //       timeout with soft-reset.
     }
 
-    void exit_freeze_mode()
+    void exitFreezeMode()
     {
         /* Exit from freeze mode */
         fc_->MCR &= ~(CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK);
@@ -474,7 +524,7 @@ private:
      * instance number used by the ISR return time::Monotonic 64-bit timestamp resolved from 16-bit Flexcan's timer
      * samples.
      */
-    time::Monotonic resolve_Timestamp(std::uint64_t frame_timestamp)
+    time::Monotonic resolveTimestamp(std::uint64_t frame_timestamp)
     {
         // TODO: can we enable quanta-level accuracy here by chaining the timer?
         /* Harvest the peripheral's current timestamp, this is the 16-bit overflowing source clock */
@@ -499,38 +549,44 @@ private:
     /** @fn
      * Helper function for an immediate transmission through an available message buffer
      *
-     * @param [in]  TX_MB_index  The index from an already polled available message buffer.
-     * @param [in]  frame        The individual frame being transmitted.
+     * @param [in]     frame            The individual frame being transmitted.
+     * @param [inout]  inout_tx_buffer  An available message buffer to utilize.
      * @return libuavcan::Result:Success after a successful transmission request.
      */
-    Result messageBuffer_Transmit(std::uint8_t TX_MB_index, const InterfaceGroup::FrameType& frame) const
+    Result messageBufferTransmit(const InterfaceGroup::FrameType& frame, volatile MessageBuffer& inout_tx_buffer) const
     {
-        /* Get data length of the frame wanted to be transmitted */
-        std::uint_fast8_t payloadLength = frame.getDataLength();
+        // TODO: revisit this when libuavcan issue #309 is fixed. In general this logic can probably be
+        //       more optimal.
+        const std::uint_fast8_t data_len               = frame.getDataLength();
+        const std::uint_fast8_t bytes_in_last_word     = (data_len % 4);
+        const std::uint_fast8_t last_byte_in_last_word = (bytes_in_last_word == 0) ? 3 : bytes_in_last_word - 1;
+        const std::uint_fast8_t word_count             = (data_len / 4) + ((bytes_in_last_word == 0) ? 0 : 1);
+        std::uint_fast8_t       byte_it                = 0;
+        std::uint_fast8_t       last_byte_in_src       = 3;
+        std::uint_fast8_t       word_it                = 0;
 
-        /* Get the frame's dlc */
-        const std::uint32_t dlc =
-            static_cast<std::underlying_type<libuavcan::media::CAN::FrameDLC>::type>(frame.getDLC());
-
-        static_assert(InterfaceGroup::FrameType::MTUBytes % 4 == 0,
-                      "We use optimizations that assume 4-word access to the frame buffer.");
-
-        /* Casting from uint8 to native uint32 for faster payload transfer to transmission message buffer */
-        const std::uint32_t* native_FrameData = reinterpret_cast<const std::uint32_t*>(frame.data);
-
-        /* Fill up the payload's bytes, including the ones that don't add up to a full word e.g. 1,2,3,5,6,7 byte
-         * data length payloads */
-        for (std::uint8_t i = 0;
-             i < (payloadLength >> 2) + std::min(1, (static_cast<std::uint8_t>(payloadLength) & 0x3));
-             i++)
+        while (word_count > 0 && byte_it < data_len)
         {
-            /* FlexCAN natively transmits the bytes in big-endian order, in order to transmit little-endian for
-             * UAVCAN, a byte swap is required */
-            REV_BYTES_32(native_FrameData[i], fc_->RAMn[TX_MB_index * MB_Size_Words + MB_Data_Offset + i]);
+            if (word_it == word_count - 1)
+            {
+                last_byte_in_src = last_byte_in_last_word;
+            }
+            else
+            {
+                last_byte_in_src = 3;
+            }
+            inout_tx_buffer.data.words[word_it] = 0;
+            for (std::uint8_t i = 0; byte_it + last_byte_in_src < data_len && i <= last_byte_in_src; ++i)
+            {
+                inout_tx_buffer.data.bytes[byte_it + i] = frame.data[byte_it + (last_byte_in_src - i)];
+            }
+            word_it += 1;
+            byte_it += 4;
         }
 
-        /* Fill up frame ID */
-        fc_->RAMn[TX_MB_index * MB_Size_Words + 1] = CAN_WMBn_ID_ID(frame.id);
+        std::fill(&inout_tx_buffer.data.words[MessageBuffer::MTUWords - word_count], &inout_tx_buffer.data.words[MessageBuffer::MTUWords], 0u);
+
+        inout_tx_buffer.byte1.fields.id_extended = frame.id;
 
         /* Fill up word 0 of frame and transmit it
          * Extended Data Length       (EDL) = 1
@@ -543,10 +599,16 @@ private:
          * Data Length Code           (DLC) = frame's dlc
          * Counter Time Stamp  (TIME STAMP) = 0 ( Handled by hardware )
          */
-        fc_->RAMn[TX_MB_index * MB_Size_Words] = (0xCC << 24u) |
-            CAN_WMBn_CS_SRR(1) |
-            CAN_WMBn_CS_IDE(1) |
-            CAN_WMBn_CS_DLC(dlc);
+        inout_tx_buffer.byte0.fields.edl = 1;
+        inout_tx_buffer.byte0.fields.brs = 1;
+        inout_tx_buffer.byte0.fields.esi = 0;
+        inout_tx_buffer.byte0.fields.srr = 1;
+        inout_tx_buffer.byte0.fields.ide = 1;
+        inout_tx_buffer.byte0.fields.rtr = 0;
+        inout_tx_buffer.byte0.fields.dlc =
+            static_cast<std::underlying_type<libuavcan::media::CAN::FrameDLC>::type>(frame.getDLC());
+        // Do this last so the hardware doesn't try to use this mailbox while we're writing to it.
+        inout_tx_buffer.byte0.fields.mb_code = 12;
 
         /* Return successful transmission request status */
         return Result::Success;
@@ -558,16 +620,14 @@ private:
     /* Pointer into the FlexCAN array for this peripheral. */
     CAN_Type* const fc_;
 
-    /* Intermediate array for harvesting the received frame's payload in the ISR */
-    volatile std::uint32_t data_ISR_word_[InterfaceGroup::FrameType::MTUBytes / 4u];
+    /* Structured access to the embedded RAM for this peripheral. */
+    volatile MessageBuffer* const buffers_;
 
     /* Counter for the number of discarded messages due to the RX FIFO being full */
     volatile std::uint32_t discarded_frames_count_;
 
-    /* Frame's reception FIFO as a dequeue with libuavcan's static memory pool, one for each available interface */
-    std::deque<InterfaceGroup::FrameType,
-               platform::memory::PoolAllocator<Frame_Capacity, sizeof(InterfaceGroup::FrameType)>>
-        frame_ISRbuffer_;
+    /* Fifo buffer between ISR and the main thread. */
+    FifoBuffer<LIBUAVCAN_S32K_RX_FIFO_LENGTH> fifo_buffer_;
 };
 
 // +--------------------------------------------------------------------------+
@@ -771,7 +831,7 @@ public:
             for (std::size_t i = 0; i < InterfaceCount; ++i)
             {
                 /* Poll for available frames in RX FIFO */
-                if (get_interface(i).is_ready(ignore_write_available))
+                if (get_interface(i).isReady(ignore_write_available))
                 {
                     return Result::Success;
                 }
