@@ -1,7 +1,8 @@
 /*
  * Copyright (c) 2020, NXP. All rights reserved.
+ * Copyright 2020 Amazon.com, Inc. or its affiliates. All Rights Reserved.
  * Distributed under The MIT License.
- * Author: Abraham Rodriguez <abraham.rodriguez@nxp.com>
+ * based on work by Abraham Rodriguez <abraham.rodriguez@nxp.com>
  */
 
 /**

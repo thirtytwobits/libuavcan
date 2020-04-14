@@ -1,5 +1,6 @@
 /* Demo of libuavcan v1 media driver layer for the NXP S32K14x family
  * of aumototive-grade MCU's, running CANFD at 4Mbit/s in data phase
+ * based on work by Abraham Rodriguez <abraham.rodriguez@nxp.com>
  *
  * Description:
  * Two rddrone_uavcan boards exchange messages with each other.
