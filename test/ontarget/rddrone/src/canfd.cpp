@@ -252,13 +252,15 @@ public:
         enterFreezeMode();
 
         /* Next configurations are only permitted in freeze mode */
-        fc_->MCR |= CAN_MCR_FDEN_MASK |          /* Habilitate CANFD feature */
+        fc_->MCR |= CAN_MCR_FDEN_MASK |          /* Enable CANFD feature */
                     CAN_MCR_FRZ_MASK;            /* Enable freeze mode entry when HALT bit is asserted */
         fc_->CTRL2 |= CAN_CTRL2_ISOCANFDEN_MASK; /* Activate the use of ISO 11898-1 CAN-FD standard */
         if (index_ == 0)
         {
             fc_->CTRL2 |= CAN_CTRL2_TIMER_SRC_MASK;
         }
+
+        // TODO: Make the CBT parametric based on the peripheral clock.
 
         /* CAN Bit Timing (CBT) configuration for a nominal phase of 1 Mbit/s with 80 time quantas,
             in accordance with Bosch 2012 specification, sample point at 83.75% */
@@ -312,7 +314,6 @@ public:
                 time::Monotonic timestamp_ISR = resolveTimestamp(buffer.byte0.fields.timestamp);
 
                 /* Receive a frame only if the buffer its under its capacity */
-                // TODO: ISR safety
                 if (!fifo_buffer_.push_back_from_isr(buffer))
                 {
                     /* Increment the number of discarded frames due to full RX FIFO */
