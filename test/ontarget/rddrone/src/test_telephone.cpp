@@ -63,6 +63,11 @@ constexpr std::size_t   NodeFrameCount   = 1u; /* Frames transmitted each time *
 constexpr std::uint32_t TestMessageId    = NodeID | (NodeMask & (1 << NodeMessageShift));
 /* Size of the payload in bytes of the frame to be transmitted */
 constexpr std::uint16_t payload_length = libuavcan::media::S32K::InterfaceGroup::FrameType::MTUBytes;
+// TODO: make the waitstates relative to the CPU speed and the data rate. We need enough to allow
+//       lower priority messages access to the bus.
+/* Number of CPU ticks to insert between a message transmissions. */
+constexpr unsigned int message_wait_states = 0xFF9;
+
 static_assert(payload_length % 4 == 0, "we're lazy and only handle 4-byte aligned MTU transports for this test.");
 
 struct Statistics
@@ -109,22 +114,31 @@ libuavcan::Result doTelephone(std::uint_fast8_t                       interface_
         last_two_words += 1;
         for (std::size_t x = 0; x < 8; ++x)
         {
-            inout_telephone_frames[i].data[56 + x] = 0xFF && (last_two_words >> (8 * x));
+            inout_telephone_frames[i].data[56 + x] = 0xFF & (last_two_words >> (8 * x));
         }
     }
     const libuavcan::Result write_status = interface_group.write(interface_index,
-                                                                 inout_telephone_frames,
-                                                                 libuavcan::media::S32K::InterfaceGroup::TxFramesLen,
-                                                                 frames_written);
+                                                                inout_telephone_frames,
+                                                                libuavcan::media::S32K::InterfaceGroup::TxFramesLen,
+                                                                frames_written);
     if (libuavcan::isFailure(write_status))
     {
         stats.tx_failures += libuavcan::media::S32K::InterfaceGroup::TxFramesLen;
     }
+    else
+    {
+        for(unsigned int i = 0; i < message_wait_states; ++i)
+        {
+            NOP();
+        }
+    }
+
     const libuavcan::Result read_status = interface_group.read(interface_index, inout_telephone_frames, frames_read);
     if (libuavcan::isFailure(read_status))
     {
         stats.rx_failures += 1;
     }
+
     if (read_status != libuavcan::Result::SuccessNothing)
     {
         stats.rx_messages += frames_read;
@@ -152,7 +166,7 @@ int main()
     NormalRUNmode_80MHz(); /* Init clocks: 80 MHz sysclk & core, 40 MHz bus, 20 MHz flash */
     PORT_init();           /* Configure ports */
 
-    LPUART1_init();                                                /* Initialize LPUART @ 9600*/
+    LPUART1_init();                                                /* Initialize LPUART @ 115200*/
     LPUART1_transmit_string("Running CAN telephone example.\n\r"); /* Transmit char string */
     LPUART1_transmit_string("My node id is ");
     {
@@ -218,7 +232,7 @@ int main()
     /* Loop for retransmission of the frame */
     for (;;)
     {
-        for (std::uint_fast8_t i = 0; i < interface_group->getInterfaceCount(); ++i)
+        for (std::uint_fast8_t i = 1; i <= interface_group->getInterfaceCount(); ++i)
         {
             doTelephone(i, *interface_group, telephone_messages);
         }

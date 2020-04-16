@@ -64,6 +64,13 @@
 #    define LIBUAVCAN_S32K_RX_FIFO_LENGTH 4
 #endif
 
+// TODO: error handling and statistics.
+// TODO: reuse any unused RAM in the controller.
+// TODO: TASD optimization
+// TODO: configurable transceiver delay setting.
+// TODO: flexable clock/bit-timing configuration
+// TODO: limit to 2 filters and apply each to 2-mailboxes (2x2=4) which gives us an extra mailbox per filter.
+
 // +--------------------------------------------------------------------------+
 // | PRIVATE IMPLEMENTATION AND STATIC STORAGE
 // +--------------------------------------------------------------------------+
@@ -764,7 +771,7 @@ public:
                          std::size_t& out_frames_written) override
     {
         /* Input validation */
-        if (interface_index > InterfaceCount)
+        if (interface_index > InterfaceCount || interface_index == 0)
         {
             return Result::BadArgument;
         }
@@ -781,7 +788,7 @@ public:
         out_frames_read = 0;
 
         /* Input validation */
-        if (interface_index > InterfaceCount)
+        if (interface_index > InterfaceCount || interface_index == 0)
         {
             return Result::BadArgument;
         }
