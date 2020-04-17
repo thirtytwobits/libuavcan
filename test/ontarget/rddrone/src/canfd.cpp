@@ -666,7 +666,7 @@ public:
             use a free-running timer.
         */
 
-        /* Clock source option 6: (SPLLDIV2) at 80Mhz */
+        /* Clock source option 6: (SPLLDIV2) at 160Mhz/2 = 80Mhz */
         PCC->PCCn[PCC_LPIT_INDEX] |= PCC_PCCn_PCS(6);
         PCC->PCCn[PCC_LPIT_INDEX] |= PCC_PCCn_CGC(1); /* Clock gating to LPIT module */
 
@@ -688,12 +688,6 @@ public:
 
         /* Start the timers */
         LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_0(1) | LPIT_SETTEN_SET_T_EN_1(1);
-
-        // TODO: check the datasheet on this one
-        /* Verify that the least significant 32-bit timer is counting (not locked at 0xFFFFFFFF) */
-        while (LPIT0->TMR[0].CVAL == LPIT_TMR_CVAL_TMR_CUR_VAL_MASK)
-        {
-        };
 
         bool did_one_succeed = false;
         bool did_any_fail    = false;

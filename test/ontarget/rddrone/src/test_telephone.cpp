@@ -66,7 +66,7 @@ constexpr std::uint16_t payload_length = libuavcan::media::S32K::InterfaceGroup:
 // TODO: make the waitstates relative to the CPU speed and the data rate. We need enough to allow
 //       lower priority messages access to the bus.
 /* Number of CPU ticks to insert between a message transmissions. */
-constexpr unsigned int message_wait_states = 0xFF9;
+constexpr unsigned int message_wait_states = 0xF2;
 
 static_assert(payload_length % 4 == 0, "we're lazy and only handle 4-byte aligned MTU transports for this test.");
 
@@ -88,7 +88,8 @@ void greenLEDInit(void)
 libuavcan::Result doTelephone(std::uint_fast8_t                       interface_index,
                               libuavcan::media::S32K::InterfaceGroup& interface_group,
                               libuavcan::media::S32K::InterfaceGroup::FrameType (
-                                  &inout_telephone_frames)[libuavcan::media::S32K::InterfaceGroup::TxFramesLen])
+                                  &inout_telephone_frames)[libuavcan::media::S32K::InterfaceGroup::TxFramesLen],
+                              unsigned int& tx_wait_states_remaining)
 {
     std::size_t frames_read    = 0;
     std::size_t frames_written = 0;
@@ -117,21 +118,26 @@ libuavcan::Result doTelephone(std::uint_fast8_t                       interface_
             inout_telephone_frames[i].data[56 + x] = 0xFF & (last_two_words >> (8 * x));
         }
     }
-    const libuavcan::Result write_status = interface_group.write(interface_index,
-                                                                inout_telephone_frames,
-                                                                libuavcan::media::S32K::InterfaceGroup::TxFramesLen,
-                                                                frames_written);
-    if (libuavcan::isFailure(write_status))
+    if (tx_wait_states_remaining == 0)
     {
-        stats.tx_failures += libuavcan::media::S32K::InterfaceGroup::TxFramesLen;
+        const libuavcan::Result write_status = interface_group.write(interface_index,
+                                                                    inout_telephone_frames,
+                                                                    libuavcan::media::S32K::InterfaceGroup::TxFramesLen,
+                                                                    frames_written);
+        if (libuavcan::isFailure(write_status))
+        {
+            stats.tx_failures += libuavcan::media::S32K::InterfaceGroup::TxFramesLen;
+        }
+        else
+        {
+            tx_wait_states_remaining = message_wait_states;
+        }
     }
     else
     {
-        for(unsigned int i = 0; i < message_wait_states; ++i)
-        {
-            NOP();
-        }
+        tx_wait_states_remaining -= 1;
     }
+
 
     const libuavcan::Result read_status = interface_group.read(interface_index, inout_telephone_frames, frames_read);
     if (libuavcan::isFailure(read_status))
@@ -229,12 +235,14 @@ int main()
             ;
     }
 
+    unsigned int tx_wait_states_remaining = 0;
+
     /* Loop for retransmission of the frame */
     for (;;)
     {
         for (std::uint_fast8_t i = 1; i <= interface_group->getInterfaceCount(); ++i)
         {
-            doTelephone(i, *interface_group, telephone_messages);
+            doTelephone(i, *interface_group, telephone_messages, tx_wait_states_remaining);
         }
         // TODO: define success criteria using the stats global and emit proper signal
         //       for the test controller to evaluate.
