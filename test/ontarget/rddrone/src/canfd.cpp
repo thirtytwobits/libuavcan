@@ -548,8 +548,8 @@ private:
 
         /* Resolve the received frame's absolute timestamp and divide by 80 due the 80Mhz clock source
          * of both the source and target timers for converting them into the desired microseconds resolution */
-        // TODO: this is wrong. ticks / 80 != microseconds
-        const std::uint64_t resolved_timestamp_micros = (target_source_micros - source_delta_ticks) / 80;
+        const std::uint64_t source_delta_micros = (source_delta_ticks / 80);
+        const std::uint64_t resolved_timestamp_micros = target_source_micros - source_delta_micros;
 
         /* Instantiate the required Monotonic object from the resolved timestamp */
         return time::Monotonic::fromMicrosecond(resolved_timestamp_micros);
