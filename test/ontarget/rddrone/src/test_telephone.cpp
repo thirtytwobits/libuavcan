@@ -11,6 +11,7 @@
 #include "device_registers.h"
 #include "clocks_and_modes.h"
 #include "LPUART.h"
+#include "LPTMR.h"
 
 #if defined(__GNUC__)
 #    pragma GCC diagnostic push
@@ -42,7 +43,6 @@ extern "C"
         WDOG->TOVAL = 0x0000FFFF; /* Maximum timeout value   */
         WDOG->CS    = 0x00002100; /* Disable watchdog        */
     }
-
 }  // extern "C"
 
 namespace
@@ -120,10 +120,11 @@ libuavcan::Result doTelephone(std::uint_fast8_t                       interface_
     }
     if (tx_wait_states_remaining == 0)
     {
-        const libuavcan::Result write_status = interface_group.write(interface_index,
-                                                                    inout_telephone_frames,
-                                                                    libuavcan::media::S32K::InterfaceGroup::TxFramesLen,
-                                                                    frames_written);
+        const libuavcan::Result write_status =
+            interface_group.write(interface_index,
+                                  inout_telephone_frames,
+                                  libuavcan::media::S32K::InterfaceGroup::TxFramesLen,
+                                  frames_written);
         if (libuavcan::isFailure(write_status))
         {
             stats.tx_failures += libuavcan::media::S32K::InterfaceGroup::TxFramesLen;
@@ -137,7 +138,6 @@ libuavcan::Result doTelephone(std::uint_fast8_t                       interface_
     {
         tx_wait_states_remaining -= 1;
     }
-
 
     const libuavcan::Result read_status = interface_group.read(interface_index, inout_telephone_frames, frames_read);
     if (libuavcan::isFailure(read_status))
@@ -171,6 +171,8 @@ int main()
     SPLL_init_160MHz();    /* Initialize SPLL to 160 MHz with 8 MHz SOSC */
     NormalRUNmode_80MHz(); /* Init clocks: 80 MHz sysclk & core, 40 MHz bus, 20 MHz flash */
     PORT_init();           /* Configure ports */
+
+    LPTMR_init(); /* Configure the LPTMR. */
 
     LPUART1_init();                                                /* Initialize LPUART @ 115200*/
     LPUART1_transmit_string("Running CAN telephone example.\n\r"); /* Transmit char string */

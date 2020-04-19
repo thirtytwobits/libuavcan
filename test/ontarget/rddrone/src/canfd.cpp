@@ -15,8 +15,8 @@
  * Macro for additional configuration needed when using a TJA1044 transceiver, which is used
  * in NXP's UCANS32K146 board, set to 0 when using EVB's or other boards.
  */
-#ifndef UAVCAN_NODE_BOARD_USED
-#    define UAVCAN_NODE_BOARD_USED 1
+#ifndef LIBUAVCAN_S32K_RDDRONE_BOARD_USED
+#    define LIBUAVCAN_S32K_RDDRONE_BOARD_USED 1
 #endif
 
 #if defined(__GNUC__)
@@ -233,7 +233,7 @@ public:
         : index_(peripheral_index)
         , fc_(FlexCAN[peripheral_index])
         , buffers_(reinterpret_cast<volatile MessageBuffer*>(FlexCAN[peripheral_index]->RAMn))
-        , discarded_frames_count_(0)
+        , statistics_{0}
         , fifo_buffer_()
     {}
 
@@ -254,7 +254,7 @@ public:
         PCC->PCCn[PCC_FlexCAN_Index[index_]] = PCC_PCCn_CGC_MASK; /* FlexCAN clock gating */
         fc_->MCR |= CAN_MCR_MDIS_MASK;        /* Disable FlexCAN module for clock source selection */
         fc_->CTRL1 &= ~CAN_CTRL1_CLKSRC_MASK; /* Clear any previous clock source configuration */
-        fc_->CTRL1 |= CAN_CTRL1_CLKSRC_MASK;  /* Select bus clock as source (40Mhz)*/
+        fc_->CTRL1 |= CAN_CTRL1_CLKSRC_MASK;  /* Select bus clock as source (80Mhz)*/
 
         enterFreezeMode();
 
@@ -262,10 +262,6 @@ public:
         fc_->MCR |= CAN_MCR_FDEN_MASK |          /* Enable CANFD feature */
                     CAN_MCR_FRZ_MASK;            /* Enable freeze mode entry when HALT bit is asserted */
         fc_->CTRL2 |= CAN_CTRL2_ISOCANFDEN_MASK; /* Activate the use of ISO 11898-1 CAN-FD standard */
-        if (index_ == 0)
-        {
-            fc_->CTRL2 |= CAN_CTRL2_TIMER_SRC_MASK;
-        }
 
         // TODO: Make the CBT parametric based on the peripheral clock.
 
@@ -324,7 +320,7 @@ public:
                 if (!fifo_buffer_.push_back_from_isr(buffer))
                 {
                     /* Increment the number of discarded frames due to full RX FIFO */
-                    discarded_frames_count_++;
+                    statistics_.rx_overflows += 1;
                 }
 
                 /* Clear MB interrupt flag (write 1 to clear)*/
@@ -486,9 +482,10 @@ public:
         return status;
     }
 
-    std::uint32_t get_rx_overflows() const
+    Result get_statistics(InterfaceGroup::Statistics& out_statistics) const
     {
-        return discarded_frames_count_;
+        out_statistics.rx_overflows = statistics_.rx_overflows;
+        return Result::Success;
     }
 
 private:
@@ -533,26 +530,30 @@ private:
      * instance number used by the ISR return time::Monotonic 64-bit timestamp resolved from 16-bit Flexcan's timer
      * samples.
      */
-    time::Monotonic resolveTimestamp(std::uint64_t frame_timestamp)
+    time::Monotonic resolveTimestamp(std::uint64_t frame_timestamp_ticks)
     {
-        // TODO: can we enable quanta-level accuracy here by chaining the timer?
+#if defined(LIBUAVCAN_S32K_NO_TIME) && (LIBUAVCAN_S32K_NO_TIME)
+        return time::Monotonic::fromMicrosecond(0);
+#else
         /* Harvest the peripheral's current timestamp, this is the 16-bit overflowing source clock */
-        std::uint64_t FlexCAN_timestamp = fc_->TIMER;
+        const std::uint64_t flexCAN_timestamp_ticks = fc_->TIMER;
 
         /* Get an non-overflowing 64-bit timestamp, this is the target clock source */
-        std::uint64_t target_source = static_cast<std::uint64_t>(
-            (static_cast<std::uint64_t>(0xFFFFFFFF - LPIT0->TMR[1].CVAL) << 32) | (0xFFFFFFFF - LPIT0->TMR[0].CVAL));
+        const std::uint64_t target_source_micros = libuavcan_media_s32k_get_monotonic_time_micros_isr_safe();
 
         /* Compute the delta of time that occurred in the source clock */
-        std::uint64_t source_delta = FlexCAN_timestamp > frame_timestamp ? FlexCAN_timestamp - frame_timestamp
-                                                                         : frame_timestamp - FlexCAN_timestamp;
+        const std::uint64_t source_delta_ticks = flexCAN_timestamp_ticks > frame_timestamp_ticks
+                                                     ? flexCAN_timestamp_ticks - frame_timestamp_ticks
+                                                     : frame_timestamp_ticks - flexCAN_timestamp_ticks;
 
         /* Resolve the received frame's absolute timestamp and divide by 80 due the 80Mhz clock source
          * of both the source and target timers for converting them into the desired microseconds resolution */
-        std::uint64_t resolved_timestamp_ISR = (target_source - source_delta) / 80;
+        // TODO: this is wrong. ticks / 80 != microseconds
+        const std::uint64_t resolved_timestamp_micros = (target_source_micros - source_delta_ticks) / 80;
 
         /* Instantiate the required Monotonic object from the resolved timestamp */
-        return time::Monotonic::fromMicrosecond(resolved_timestamp_ISR);
+        return time::Monotonic::fromMicrosecond(resolved_timestamp_micros);
+#endif
     }
 
     /** @fn
@@ -632,8 +633,8 @@ private:
     /* Structured access to the embedded RAM for this peripheral. */
     volatile MessageBuffer* const buffers_;
 
-    /* Counter for the number of discarded messages due to the RX FIFO being full */
-    volatile std::uint32_t discarded_frames_count_;
+    /* Various statistics maintained for the peripheral. */
+    volatile InterfaceGroup::Statistics statistics_;
 
     /* Fifo buffer between ISR and the main thread. */
     FifoBuffer<LIBUAVCAN_S32K_RX_FIFO_LENGTH> fifo_buffer_;
@@ -660,35 +661,6 @@ public:
     Result start(const typename InterfaceManager::InterfaceGroupType::FrameType::Filter* filter_config,
                  std::size_t                                                             filter_config_length)
     {
-        /*
-            CAN frames timestamping 64-bit timer initialization using chained LPIT channel 0 and 1.
-            The lower 16-bits of LPIT 0 are used as the external time trigger for CAN0. CAN1 and CAN2
-            use a free-running timer.
-        */
-
-        /* Clock source option 6: (SPLLDIV2) at 160Mhz/2 = 80Mhz */
-        PCC->PCCn[PCC_LPIT_INDEX] |= PCC_PCCn_PCS(6);
-        PCC->PCCn[PCC_LPIT_INDEX] |= PCC_PCCn_CGC(1); /* Clock gating to LPIT module */
-
-        /* Enable module */
-        LPIT0->MCR |= LPIT_MCR_M_CEN(1);
-
-        // TODO: verify the tick rate of this timer.
-        /* Select 32-bit periodic Timer for both chained channels and timeouts timer (default)  */
-        LPIT0->TMR[0].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
-        LPIT0->TMR[1].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
-        LPIT0->TMR[2].TCTRL |= LPIT_TMR_TCTRL_MODE(0);
-
-        /* Select chain mode for channel 1, this becomes the most significant 32 bits */
-        LPIT0->TMR[1].TCTRL |= LPIT_TMR_TCTRL_CHAIN(1);
-
-        /* Setup max reload value for both channels 0xFFFFFFFF */
-        LPIT0->TMR[0].TVAL = LPIT_TMR_TVAL_TMR_VAL_MASK;
-        LPIT0->TMR[1].TVAL = LPIT_TMR_TVAL_TMR_VAL_MASK;
-
-        /* Start the timers */
-        LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_0(1) | LPIT_SETTEN_SET_T_EN_1(1);
-
         bool did_one_succeed = false;
         bool did_any_fail    = false;
         /* FlexCAN instances initialization */
@@ -717,17 +689,15 @@ public:
         PORTA->PCR[13] |= PORT_PCR_MUX(3);               /* CAN1_TX at PORT A pin 13 */
 
         /* Set to LOW the standby (STB) pin in both transceivers of the UCANS32K146 node board */
-        if (UAVCAN_NODE_BOARD_USED)
-        {
-            PORTE->PCR[11] |= PORT_PCR_MUX(1); /* MUX to GPIO */
-            PTE->PDDR |= 1 << 11;              /* Set direction as output */
-            PTE->PCOR |= 1 << 11;              /* Set the pin LOW */
+#    if defined(LIBUAVCAN_S32K_RDDRONE_BOARD_USED) && (LIBUAVCAN_S32K_RDDRONE_BOARD_USED)
+        PORTE->PCR[11] |= PORT_PCR_MUX(1); /* MUX to GPIO */
+        PTE->PDDR |= 1 << 11;              /* Set direction as output */
+        PTE->PCOR |= 1 << 11;              /* Set the pin LOW */
 
-            PORTE->PCR[10] |= PORT_PCR_MUX(1); /* Same as above */
-            PTE->PDDR |= 1 << 10;
-            PTE->PCOR |= 1 << 10;
-        }
-
+        PORTE->PCR[10] |= PORT_PCR_MUX(1); /* Same as above */
+        PTE->PDDR |= 1 << 10;
+        PTE->PCOR |= 1 << 10;
+#    endif
 #endif
 
 #if defined(MCU_S32K148)
@@ -810,25 +780,18 @@ public:
 
     virtual Result select(duration::Monotonic timeout, bool ignore_write_available) override
     {
+#if defined(LIBUAVCAN_S32K_NO_TIME) && (LIBUAVCAN_S32K_NO_TIME)
+        return Result::NotImplemented;
+#else
         /* Obtain timeout from object */
-        std::uint32_t cycles_timeout = static_cast<std::uint32_t>(timeout.toMicrosecond());
+        const std::uint64_t timeout_micros =
+            (timeout.toMicrosecond() < 0) ? 0u : static_cast<std::uint64_t>(timeout.toMicrosecond());
 
         /* Initialization of delta variable for comparison */
-        volatile std::uint32_t delta = 0;
-
-        // TODO: just monitor (but don't modify) LPIT channels 0 and 1. There's no need to
-        // use more channels.
-        /* Disable LPIT channel 3 for loading */
-        LPIT0->CLRTEN |= LPIT_CLRTEN_CLR_T_EN_3(1);
-
-        /* Load LPIT with its maximum value */
-        LPIT0->TMR[3].TVAL = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK;
-
-        /* Enable LPIT channel 3 for timeout start */
-        LPIT0->SETTEN |= LPIT_SETTEN_SET_T_EN_3(1);
+        const std::uint64_t start_wait_micros = libuavcan_media_s32k_get_monotonic_time_micros_isr_safe();
 
         /* Start of timed block */
-        while (delta < cycles_timeout)
+        for (;;)
         {
             /* Poll in each of the available interfaces */
             for (std::size_t i = 0; i < InterfaceCount; ++i)
@@ -841,12 +804,22 @@ public:
             }
 
             /* Get current value of delta */
-            // TODO: verify the time units here.
-            delta = LPIT_TMR_CVAL_TMR_CUR_VAL_MASK - (LPIT0->TMR[3].CVAL);
+            const std::uint64_t delta_micros =
+                libuavcan_media_s32k_get_monotonic_time_micros_isr_safe() - start_wait_micros;
+            if (delta_micros > timeout_micros)
+            {
+                break;
+            }
+            // TODO: enter a low-power mode and wait for interrupts.
+            for (std::size_t i = 0; i < 12000; ++i)
+            {
+                NOP();
+            }
         }
 
         /* If this section is reached, means timeout occurred and return timeout status */
         return Result::SuccessTimeout;
+#endif
     }
 
     /*
@@ -860,14 +833,16 @@ public:
         get_interface(instance).isrHandler();
     }
 
-    std::uint32_t get_rx_overflows() const
+    Result get_statistics(std::uint_fast8_t interface_index, Statistics& out_statistics) const
     {
-        std::uint32_t discarded_frames_count = 0;
-        for (std::size_t i = 0; i < InterfaceCount; ++i)
+        if (interface_index > InterfaceCount || interface_index == 0)
         {
-            discarded_frames_count += get_interface(i).get_rx_overflows();
+            return Result::BadArgument;
         }
-        return discarded_frames_count;
+        else
+        {
+            return get_interface(interface_index).get_statistics(out_statistics);
+        }
     }
 
 private:

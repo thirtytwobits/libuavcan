@@ -10,6 +10,17 @@
  * Header driver file for the media layer of Libuavcan v1 targeting
  * the NXP S32K14 family of automotive grade MCU's, running
  * CAN-FD at 4Mbit/s data phase and 1Mbit/s in nominal phase.
+ *
+ * @par Pre-processing macros that affect driver compilation:
+ * @li @c LIBUAVCAN_S32K_RX_FIFO_LENGTH The number of messages per-interface that can be buffered
+ *     from the receive ISR before the mesage is read on the main thread. This memory will be allocated
+ *     in .bss by most linkers.
+ * @li @c LIBUAVCAN_S32K_NO_TIME If defined as 1 then the driver will not provide correct receive timestamps
+ *     and the select method will return @code Result::NotImplemented. This allows a firmware to skip
+ *     implementing the @c libuavcan_media_s32k_get_monotonic_time_nanos_isr_safe method.
+ * @li @c MCU_S32K14X This driver can be compiled for the MCU_S32K142, MCU_S32K146, MCU_S32K148
+ * @li @c LIBUAVCAN_S32K_RDDRONE_BOARD_USED If defined as 1 then PORTE pins 10 and 11 will be controlled
+ *     internally by the driver to enable the transceiver of the rddrone_uavcan node board.
  */
 
 #ifndef CANFD_HPP_INCLUDED
@@ -17,6 +28,42 @@
 
 #include "libuavcan/media/can.hpp"
 #include "libuavcan/media/interfaces.hpp"
+
+#if !defined(LIBUAVCAN_S32K_NO_TIME) || !(LIBUAVCAN_S32K_NO_TIME)
+/**
+ * To use all the features of the S32K libuavcan media layer you must implement this method in your firmware. It
+ * is used by interface groups and interfaces for all timekeeping including RX timestamping. It is defined as a C
+ * method to allow sharing with other drivers written in C.
+ *
+ * This implementation expects a mirosecond-resolution timer. If your system cannot provide this simply up-sample
+ * the time available to provide the correct units if not the correct resolution.
+ *
+ * @par Implementation Requirements:
+ * @li The time returned must be monotonic. For a true 64-bit timer this is an intrinisic property since
+ *     the rollover for 64-bits in microseconds will exceed the lifespan of the silicon the interfaces are running
+ *     on. If implemented using a 32-bit timer (or less) other provisions must be made to prevent the returned
+ *     value from decreasing.
+ * @li The timer must be ISR-safe. The interface groups may invoke this method from CAN peripheral ISRs and from calls
+ *     into methods on the  @c InterfaceGroup object.
+ * @li For performance reasons, the method should not disable interrupts. Where using a chained timer, a simple strategy
+ *     is to use optimistic reads of the high and low channels in a loop where the full 64-bit value is only returned
+ *     once both reads can be made without either value changing.
+ * @li The timer's accuracy is directly proportional to the immediacy of the returned timer value (latency) and the
+ * consistency of the method's timing (jitter). If a cached time value updated by an ISR is used the latency between
+ * updates may introduce jitter into the receive timestamps. If these timestamps are used for precision timekeeping then
+ * this jitter may become unacceptable to higher layers. It is better to increase the amount of time spent in the call
+ * if the value returned is closer to the actual timer value (i.e. more instructions between invoking the call and
+ * obtaining the value do not create latency or jitter but variability in the number of instructions between the time
+ * the value was captured and the method returning that value introduces jitter).
+ *
+ * @note
+ * The @c LPIT timer in the S32K family of MCUs is, unfortunately, not well-suited for implementing this method
+ * since the current value of its counters cannot be reliably read outside of an ISR.
+ *
+ */
+extern "C" uint64_t libuavcan_media_s32k_get_monotonic_time_micros_isr_safe();
+
+#endif
 
 namespace libuavcan
 {
@@ -49,18 +96,32 @@ protected:
      */
     InterfaceGroup(){};
     virtual ~InterfaceGroup() = default;
+
 public:
     // rule of six
     InterfaceGroup(const InterfaceGroup&) = delete;
     InterfaceGroup& operator=(const InterfaceGroup&) = delete;
-    InterfaceGroup(const InterfaceGroup&&) = delete;
+    InterfaceGroup(const InterfaceGroup&&)           = delete;
     InterfaceGroup& operator=(const InterfaceGroup&&) = delete;
 
+    struct Statistics
+    {
+        /**
+         * The number of time this interface group discarded received messages because internal
+         * receive buffers were full. This will result in older data remaining in the internal
+         * receive buffers and newer data being discarded.
+         */
+        std::uint32_t rx_overflows;
+    };
+
     /**
-     * Get the number of time this interface group discarded received messages because internal receive
-     * buffers were full.
+     * Fill out the current statistics for the group.
+     * @param  interface_index  The index of the interface in the group to retrieve statistics for.
+     * @param  out_statistics   A data-structure of statistics collected by each interface.
+     * @return libuavcan::Result::Success if the statistics data structure was updated with valid
+     *         data.
      */
-    std::uint32_t get_rx_overflows() const;
+    Result get_statistics(std::uint_fast8_t interface_index, Statistics& out_statistics) const;
 };
 
 /**
