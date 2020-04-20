@@ -501,16 +501,51 @@ private:
             return;
         }
 
-        fc_->MCR &=
-            ~CAN_MCR_MDIS_MASK; /* Unset disable bit (per procedure in section 53.1.8 of the reference manual) */
+        if (fc_->MCR & CAN_MCR_MDIS_MASK)
+        {
+            fc_->MCR &=
+                ~CAN_MCR_MDIS_MASK; /* Unset disable bit (per procedure in section 53.1.8 of the reference manual) */
+        }
         fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK); /* Request freeze mode entry */
 
-        /* Block for freeze mode entry */
-        while (!(fc_->MCR & CAN_MCR_FRZACK_MASK))
+        /* Block for freeze mode entry waiting for about 740 nominal CAN bits (assuming 160Mhz CPU) */
+        for (std::uint32_t nominal_bits = 0x1CE80; nominal_bits > 0; --nominal_bits)
         {
-        };
-        // TODO: implement the full freeze mode specification detailed by 53.1.8 of the reference manual including
-        //       timeout with soft-reset.
+            if (fc_->MCR & CAN_MCR_FRZACK_MASK)
+            {
+                return;
+            }
+            if (WDOG->CS & WDOG_CS_EN_MASK)
+            {
+                DISABLE_INTERRUPTS();
+                if (WDOG->CS & WDOG_CS_CMD32EN_MASK)
+                {
+                    WDOG->CNT = 0xB480A602;
+                }
+                else
+                {
+                    WDOG->CNT = 0xA602;
+                    WDOG->CNT = 0xB480;
+                }
+                ENABLE_INTERRUPTS();
+            }
+        }
+        // timeout waiting for freeze-mode entry.
+        // Per section 53.1.8.1, soft-reset the driver.
+        fc_->MCR |= CAN_MCR_SOFTRST_MASK;
+        while (fc_->MCR & CAN_MCR_SOFTRST_MASK)
+        {
+            // wait for soft-reset acknowledge.
+        }
+
+        if (fc_->MCR & CAN_MCR_MDIS_MASK)
+        {
+            fc_->MCR &=
+                ~CAN_MCR_MDIS_MASK; /* Unset disable bit (per procedure in section 53.1.8 of the reference manual) */
+        }
+        // According to the datasheet, after a soft-reset you don't have to wait for MCR_FRZACK the second time?
+        // This might be a misinterpretation but I'm not sure how to test this branch.
+        fc_->MCR |= (CAN_MCR_HALT_MASK | CAN_MCR_FRZ_MASK); /* Request freeze mode entry */
     }
 
     void exitFreezeMode()
@@ -548,7 +583,7 @@ private:
 
         /* Resolve the received frame's absolute timestamp and divide by 80 due the 80Mhz clock source
          * of both the source and target timers for converting them into the desired microseconds resolution */
-        const std::uint64_t source_delta_micros = (source_delta_ticks / 80);
+        const std::uint64_t source_delta_micros       = (source_delta_ticks / 80);
         const std::uint64_t resolved_timestamp_micros = target_source_micros - source_delta_micros;
 
         /* Instantiate the required Monotonic object from the resolved timestamp */
@@ -556,7 +591,7 @@ private:
 #endif
     }
 
-    /** @fn
+    /**
      * Helper function for an immediate transmission through an available message buffer
      *
      * @param [in]     frame            The individual frame being transmitted.
@@ -901,6 +936,11 @@ Result InterfaceManager::startInterfaceGroup(const typename InterfaceGroupType::
 
 Result InterfaceManager::stopInterfaceGroup(InterfaceGroupPtrType& inout_group)
 {
+    // TODO: implement stopping.
+    //       1. turn off the ISRs - read the datasheet here. There are neat edge cases where you can get one more
+    //          interrupt after the ISR is disabled in some edge cases.
+    //       2. stop the driver
+    //       3. delete the interface group.
     (void) inout_group;
     return Result::NotImplemented;
 }
