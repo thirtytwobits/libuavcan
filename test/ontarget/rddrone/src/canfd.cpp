@@ -27,8 +27,6 @@
 /* S32K driver header file */
 #include "libuavcan/media/S32K/canfd.hpp"
 
-/* STL queue for the intermediate ISR buffer */
-#include <deque>
 #include <type_traits>
 
 /* libuavcan core header file for static pool allocator */
