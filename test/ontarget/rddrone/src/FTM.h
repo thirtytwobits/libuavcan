@@ -30,19 +30,23 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#ifndef LPTMR_H_
-#define LPTMR_H_
+#ifndef FTM_H_
+#define FTM_H_
 
-#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
 
-    void LPTMR_init(void);
-
+void FTM0_init(void);
+void FTM0_CH0_OC_init(void);
+void FTM0_CH1_PWM_init(void);
+void FTM0_CH6_IC_init(void);
+void FTM0_CH0_output_compare(void);
+void FTM0_CH6_input_capture(void);
+void start_FTM0_counter (void);
 #ifdef __cplusplus
 }
 #endif
-#endif /* LPTMR_H_ */
+#endif /* FTM_H_ */

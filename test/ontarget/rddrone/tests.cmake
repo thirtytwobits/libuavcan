@@ -23,7 +23,7 @@ set(MCU_LINKER_SCRIPT "${ONTARGET_TEST_PATH}/${BOARD_NAME}/Project_Settings/Link
 set(USER_SOURCES "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/canfd.cpp"
                  "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/clocks_and_modes.c"
                  "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/LPUART.c"
-                 "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/LPTMR.c"
+                 "${ONTARGET_TEST_PATH}/${BOARD_NAME}/src/FTM.c"
 )
 
 set(BSP_SOURCES "${ONTARGET_TEST_PATH}/${BOARD_NAME}/Project_Settings/Startup_Code/startup_${MCU_LINE}.S"

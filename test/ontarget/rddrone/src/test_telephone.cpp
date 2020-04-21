@@ -11,7 +11,7 @@
 #include "device_registers.h"
 #include "clocks_and_modes.h"
 #include "LPUART.h"
-#include "LPTMR.h"
+#include "FTM.h"
 
 #if defined(__GNUC__)
 #    pragma GCC diagnostic push
@@ -172,7 +172,7 @@ int main()
     NormalRUNmode_80MHz(); /* Init clocks: 80 MHz sysclk & core, 40 MHz bus, 20 MHz flash */
     PORT_init();           /* Configure ports */
 
-    LPTMR_init(); /* Configure the LPTMR. */
+    FTM0_init(); /* Configure FTM0. */
 
     LPUART1_init();                                                /* Initialize LPUART @ 115200*/
     LPUART1_transmit_string("Running CAN telephone example.\n\r"); /* Transmit char string */

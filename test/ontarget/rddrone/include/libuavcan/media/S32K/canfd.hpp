@@ -21,6 +21,10 @@
  * @li @c MCU_S32K14X This driver can be compiled for the MCU_S32K142, MCU_S32K146, MCU_S32K148
  * @li @c LIBUAVCAN_S32K_RDDRONE_BOARD_USED If defined as 1 then PORTE pins 10 and 11 will be controlled
  *     internally by the driver to enable the transceiver of the rddrone_uavcan node board.
+ * @li @c LIBUAVCAN_S32K_WDREFRESH_WHILE_WAITING_FOR_FREEZE_MODE If defined as 1 then the driver will refresh
+ *      the watchdog peripheral while waiting for the peripheral to enter freeze mode. Do not enable this if
+ *      you use the window feature of the watchdog and this is not required if your watchdog timeout is >
+ *      about 800 nominal CAN bit times. Freeze mode must be entered when starting an interface group.
  */
 
 #ifndef CANFD_HPP_INCLUDED

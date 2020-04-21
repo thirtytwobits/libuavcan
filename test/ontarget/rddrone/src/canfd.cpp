@@ -515,6 +515,8 @@ private:
             {
                 return;
             }
+#if defined(LIBUAVCAN_S32K_WDREFRESH_WHILE_WAITING_FOR_FREEZE_MODE) && \
+    (LIBUAVCAN_S32K_WDREFRESH_WHILE_WAITING_FOR_FREEZE_MODE)
             if (WDOG->CS & WDOG_CS_EN_MASK)
             {
                 DISABLE_INTERRUPTS();
@@ -529,6 +531,7 @@ private:
                 }
                 ENABLE_INTERRUPTS();
             }
+#endif
         }
         // timeout waiting for freeze-mode entry.
         // Per section 53.1.8.1, soft-reset the driver.
